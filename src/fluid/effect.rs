@@ -24,7 +24,7 @@ pub(crate) enum EffectFailure {
     AudioRouting(audio::AudioStartError),
     /// The song state could not be encoded, so there was nothing to copy.
     SongEncode(SongCodeError),
-    Section(sections::SectionError),
+    State(states::StateError),
     /// The clipboard refused the write.
     Clipboard(ClipboardError),
     /// The effect needs a piece of live context the frame did not carry.
@@ -58,7 +58,7 @@ impl fmt::Display for EffectFailure {
             Self::AudioRouting(error) => write!(f, "{error}"),
             Self::UnknownControl(id) => write!(f, "no control named {id}"),
             Self::SongEncode(error) => write!(f, "{error}"),
-            Self::Section(error) => write!(f, "{error}"),
+            Self::State(error) => write!(f, "{error}"),
             Self::Clipboard(error) => write!(f, "{error}"),
             Self::MissingContext(what) => write!(f, "no {what} in this frame"),
             Self::AutomationLaneLimit => {
@@ -81,7 +81,7 @@ impl Error for EffectFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::SongEncode(error) => Some(error),
-            Self::Section(error) => Some(error),
+            Self::State(error) => Some(error),
             Self::Clipboard(error) => Some(error),
             Self::CaptureHistory(error) => Some(error),
             _ => None,
@@ -235,8 +235,8 @@ enum ModulePlacement {
 }
 
 pub(crate) struct EffectExecutor {
-    bank: Result<sections::SectionBank, sections::SectionError>,
-    seen_section_revision: u64,
+    bank: Result<states::StateBank, states::StateError>,
+    seen_state_revision: u64,
     output_routing: Option<audio::OutputRouting>,
     session: LiveSession,
     auto: AutoControls,
@@ -269,8 +269,8 @@ impl EffectExecutor {
 
     pub(crate) fn seeded(session: LiveSession, auto: AutoControls, seed: u64) -> Self {
         Self {
-            bank: sections::SectionBank::open(None),
-            seen_section_revision: 0,
+            bank: states::StateBank::open(None),
+            seen_state_revision: 0,
             output_routing: None,
             session,
             auto,
@@ -312,52 +312,52 @@ impl EffectExecutor {
         }
     }
 
-    fn section_action(
+    fn state_action(
         &mut self,
-        action: SectionAction,
+        action: StateAction,
     ) -> Result<EffectAcknowledgement, EffectFailure> {
         match action {
-            SectionAction::Store(index) => {
+            StateAction::Store(index) => {
                 let song = self.capture_song();
                 let replaced = self
                     .bank
                     .as_mut()
-                    .map_err(|e| EffectFailure::Section(e.clone()))?
+                    .map_err(|e| EffectFailure::State(e.clone()))?
                     .store(index, &song)
-                    .map_err(EffectFailure::Section)?;
+                    .map_err(EffectFailure::State)?;
                 self.show_message(format!(
-                    "{} section {}",
+                    "{} state {}",
                     if replaced { "Replaced" } else { "Stored" },
-                    sections::SECTION_NAMES[index]
+                    states::STATE_NAMES[index]
                 ));
             }
-            SectionAction::Cancel => {
+            StateAction::Cancel => {
                 self.session
-                    .update(|snapshot| snapshot.pending_section = None);
-                self.show_message("Section queue cancelled".into());
+                    .update(|snapshot| snapshot.pending_state = None);
+                self.show_message("State queue cancelled".into());
             }
-            SectionAction::Recall(index) => {
+            StateAction::Recall(index) => {
                 self.require_running_clock()?;
-                self.queue_section(index)?;
+                self.queue_state(index)?;
             }
-            SectionAction::Next => {
+            StateAction::Next => {
                 self.require_running_clock()?;
                 let index = self
                     .bank
                     .as_ref()
-                    .map_err(|e| EffectFailure::Section(e.clone()))?
-                    .next(self.session.load().current_section)
-                    .ok_or(EffectFailure::Section(sections::SectionError::Empty))?;
-                self.queue_section(index)?;
+                    .map_err(|e| EffectFailure::State(e.clone()))?
+                    .next(self.session.load().current_state)
+                    .ok_or(EffectFailure::State(states::StateError::Empty))?;
+                self.queue_state(index)?;
             }
-            SectionAction::Previous => {
+            StateAction::Previous => {
                 self.require_running_clock()?;
                 let index = self
                     .session
                     .load()
-                    .previous_section
-                    .ok_or(EffectFailure::Section(sections::SectionError::NoPrevious))?;
-                self.queue_section(index)?;
+                    .previous_state
+                    .ok_or(EffectFailure::State(states::StateError::NoPrevious))?;
+                self.queue_state(index)?;
             }
         }
         Ok(self.published())
@@ -365,64 +365,60 @@ impl EffectExecutor {
 
     fn require_running_clock(&self) -> Result<(), EffectFailure> {
         if self.session.load().transport == Transport::Stopped {
-            return Err(EffectFailure::Section(sections::SectionError::Stopped));
+            return Err(EffectFailure::State(states::StateError::Stopped));
         }
         Ok(())
     }
 
-    fn queue_section(&mut self, index: usize) -> Result<(), EffectFailure> {
+    fn queue_state(&mut self, index: usize) -> Result<(), EffectFailure> {
         let song = self
             .bank
             .as_ref()
-            .map_err(|e| EffectFailure::Section(e.clone()))?
+            .map_err(|e| EffectFailure::State(e.clone()))?
             .song(index)
-            .map_err(EffectFailure::Section)?;
-        let section_snapshot = Arc::new(LiveSessionSnapshot::from_song(&song));
+            .map_err(EffectFailure::State)?;
+        let state_snapshot = Arc::new(LiveSessionSnapshot::from_song(&song));
         self.session.update(|snapshot| {
-            snapshot.pending_section = Some(PendingSection {
+            snapshot.pending_state = Some(PendingState {
                 index,
-                snapshot: Arc::clone(&section_snapshot),
+                snapshot: Arc::clone(&state_snapshot),
             })
         });
         self.show_message(format!(
-            "Queued section {} for phrase end",
-            sections::SECTION_NAMES[index]
+            "Queued state {} for phrase end",
+            states::STATE_NAMES[index]
         ));
         Ok(())
     }
 
-    /// The recall leader's digit: queue the section, or cancel the queue when
-    /// that section is already the queued one.
-    fn toggle_section_queue(
-        &mut self,
-        index: usize,
-    ) -> Result<EffectAcknowledgement, EffectFailure> {
+    /// The recall leader's digit: queue the state, or cancel the queue when
+    /// that state is already the queued one.
+    fn toggle_state_queue(&mut self, index: usize) -> Result<EffectAcknowledgement, EffectFailure> {
         let queued = self
             .session
             .load()
-            .pending_section
+            .pending_state
             .as_ref()
             .is_some_and(|pending| pending.index == index);
-        self.section_action(if queued {
-            SectionAction::Cancel
+        self.state_action(if queued {
+            StateAction::Cancel
         } else {
-            SectionAction::Recall(index)
+            StateAction::Recall(index)
         })
     }
 
-    /// Which slots hold a section, for the leader overlay. A refused bank
+    /// Which slots hold a state, for the leader overlay. A refused bank
     /// holds nothing.
-    pub(crate) fn filled_sections(&self) -> [bool; sections::SECTION_COUNT] {
-        self.bank.as_ref().map_or(
-            [false; sections::SECTION_COUNT],
-            sections::SectionBank::filled,
-        )
+    pub(crate) fn filled_states(&self) -> [bool; states::STATE_COUNT] {
+        self.bank
+            .as_ref()
+            .map_or([false; states::STATE_COUNT], states::StateBank::filled)
     }
 
-    pub(crate) fn with_section_path(mut self, path: Option<std::path::PathBuf>) -> Self {
-        self.bank = sections::SectionBank::open(path);
+    pub(crate) fn with_state_path(mut self, path: Option<std::path::PathBuf>) -> Self {
+        self.bank = states::StateBank::open(path);
         if let Err(error) = &self.bank {
-            self.show_failure(format!("Section bank refused: {error}"));
+            self.show_failure(format!("State bank refused: {error}"));
         }
         self
     }
@@ -433,9 +429,9 @@ impl EffectExecutor {
     }
 
     pub(crate) fn poll_output_routing(&mut self) {
-        let revision = self.session.load().section_revision;
-        if self.seen_section_revision != revision {
-            self.seen_section_revision = revision;
+        let revision = self.session.load().state_revision;
+        if self.seen_state_revision != revision {
+            self.seen_state_revision = revision;
             self.pending = None;
             self.capture_history = CaptureHistory::default();
             self.phrase = LeadPhraseBuffer::default();
@@ -1580,8 +1576,8 @@ impl EffectExecutor {
                 })
             }
             InteractionEffect::SelectPage(page) => Ok(EffectAcknowledgement::PageSelected(page)),
-            InteractionEffect::Section(action) => self.section_action(action),
-            InteractionEffect::ToggleSectionQueue(index) => self.toggle_section_queue(index),
+            InteractionEffect::State(action) => self.state_action(action),
+            InteractionEffect::ToggleStateQueue(index) => self.toggle_state_queue(index),
             InteractionEffect::PlanMute(tab) => self.plan_mute(tab, context.beat),
             InteractionEffect::ClearSequence(tab) => self.clear_sequence(tab),
             InteractionEffect::Save => self.execute_with_clipboard(LiveEffect::CopySong, clipboard),
@@ -1738,8 +1734,8 @@ impl EffectExecutor {
                 self.toggle_mute(tab);
                 Ok(self.published())
             }
-            InteractionEffect::Section(action) => self.section_action(action),
-            InteractionEffect::ToggleSectionQueue(index) => self.toggle_section_queue(index),
+            InteractionEffect::State(action) => self.state_action(action),
+            InteractionEffect::ToggleStateQueue(index) => self.toggle_state_queue(index),
             InteractionEffect::PlanMute(tab) => self.plan_mute(tab, context.beat),
             InteractionEffect::ClearSequence(tab) => self.clear_sequence(tab),
             InteractionEffect::ToggleTransport => {

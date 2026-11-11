@@ -686,11 +686,11 @@ pub(crate) struct FluidEngine {
     /// The UI publishes planned actions ahead of time; audio owns their exact
     /// boundary so an onset never sees the previous mute state.
     planned: Option<PlannedAction>,
-    pending_section: Option<PendingSection>,
-    section_landed_sample: Option<u64>,
-    /// The beat a queued section lands on, while one is queued.
-    section_end_beat: Option<f64>,
-    section_gain: f32,
+    pending_state: Option<PendingState>,
+    state_landed_sample: Option<u64>,
+    /// The beat a queued state lands on, while one is queued.
+    state_end_beat: Option<f64>,
+    state_gain: f32,
     pub(crate) vamp: Option<VampState>,
     vamp_active: bool,
     pub(crate) vamp_landed_beat: Option<f64>,
@@ -777,10 +777,10 @@ impl FluidEngine {
                 holds
             },
             planned: live.planned,
-            pending_section: live.pending_section.clone(),
-            section_landed_sample: None,
-            section_end_beat: None,
-            section_gain: 1.0,
+            pending_state: live.pending_state.clone(),
+            state_landed_sample: None,
+            state_end_beat: None,
+            state_gain: 1.0,
             vamp: live.vamp,
             vamp_active,
             vamp_landed_beat: None,
@@ -970,34 +970,34 @@ impl StereoEngine for FluidEngine {
             }
             self.awaiting_initial_play = false;
         }
-        // A queued section lands on the pad cursor's phrase end, the same
+        // A queued state lands on the pad cursor's phrase end, the same
         // `ProgressionCursor::phrase_end_beat` that every phrase consumer
         // reads, recomputed each sample so chord edits and a held Vamp move
         // it exactly as they move the phrase. `tempo.beat` is already the beat
         // this sample's pad tick will use, so landing here is before the
         // crossing, never a sample after it.
         // The queue is read from the session every sample, not on the control
-        // tick: a phrase end is not bar-aligned, and a section queued a few
+        // tick: a phrase end is not bar-aligned, and a state queued a few
         // samples before it must still land on it.
-        self.pending_section = self.session.load().pending_section.clone();
-        self.section_end_beat = self
-            .pending_section
+        self.pending_state = self.session.load().pending_state.clone();
+        self.state_end_beat = self
+            .pending_state
             .as_ref()
             .and_then(|_| self.phrase_end_now());
-        self.session.publish_audio_phrase_end(self.section_end_beat);
-        let section_due = self.transport == Transport::Playing
+        self.session.publish_audio_phrase_end(self.state_end_beat);
+        let state_due = self.transport == Transport::Playing
             && self
-                .section_end_beat
+                .state_end_beat
                 .is_some_and(|end| self.tempo.beat + GRID_BEAT_EPSILON >= end);
-        let landed = if section_due {
-            let pending = self.pending_section.take().unwrap();
-            let landed = self.session.land_section(
+        let landed = if state_due {
+            let pending = self.pending_state.take().unwrap();
+            let landed = self.session.land_state(
                 &pending,
                 self.current_sample as f64 / f64::from(self.sample_rate),
             );
             if landed {
                 self.morph.store(Arc::new(None));
-                self.section_landed_sample = Some(self.current_sample);
+                self.state_landed_sample = Some(self.current_sample);
             }
             landed
         } else {
@@ -1015,7 +1015,7 @@ impl StereoEngine for FluidEngine {
         let until_bar = 4.0 - self.tempo.beat.rem_euclid(4.0);
         let probe_beats = 128.0 * self.tempo.bpm / (60.0 * f64::from(self.sample_rate));
         let near_bar = until_bar <= probe_beats;
-        if self.current_sample.is_multiple_of(128) || morph_boundary || section_due || near_bar {
+        if self.current_sample.is_multiple_of(128) || morph_boundary || state_due || near_bar {
             let live = self.session.load();
             let restarting = self.transport_restart != live.transport_restart;
             if restarting {
@@ -1075,7 +1075,7 @@ impl StereoEngine for FluidEngine {
             }
             self.authored_muted = session.muted;
             self.planned = session.planned;
-            self.pending_section = session.pending_section.clone();
+            self.pending_state = session.pending_state.clone();
             self.hold_muted = session.hold_muted;
             self.hold_muted[HoldMute::KickAndBass as usize] |= session.kick_bass_latched;
             if self.vamp != session.vamp {
@@ -1329,19 +1329,19 @@ impl StereoEngine for FluidEngine {
             mute_gains[Tab::Master as usize],
         );
         let fade_samples = (self.sample_rate * 0.005).max(1.0) as u64;
-        let fade_in = self.section_landed_sample.map_or(1.0, |start| {
+        let fade_in = self.state_landed_sample.map_or(1.0, |start| {
             (self.current_sample.saturating_sub(start) as f32 / fade_samples as f32).min(1.0)
         });
-        let fade_out = self.section_end_beat.map_or(1.0, |end| {
+        let fade_out = self.state_end_beat.map_or(1.0, |end| {
             let remaining = ((end - self.tempo.beat) * 60.0 * f64::from(self.sample_rate)
                 / self.tempo.bpm) as f32;
             (remaining / fade_samples as f32).clamp(0.0, 1.0)
         });
         let target_gain = fade_in.min(fade_out);
         let step = 1.0 / fade_samples as f32;
-        self.section_gain += (target_gain - self.section_gain).clamp(-step, step);
-        out.0 *= self.section_gain;
-        out.1 *= self.section_gain;
+        self.state_gain += (target_gain - self.state_gain).clamp(-step, step);
+        out.0 *= self.state_gain;
+        out.1 *= self.state_gain;
         self.level_acc[Tab::Master as usize] += out.0 * out.0 + out.1 * out.1;
         if self.current_sample.is_multiple_of(LEVEL_BLOCK) {
             let block_seconds = LEVEL_BLOCK as f32 / self.sample_rate;
@@ -2582,7 +2582,7 @@ impl MasterBus {
 }
 
 #[cfg(test)]
-mod section_tests {
+mod state_tests {
     use super::*;
 
     const RATE: f32 = 8000.0;
@@ -2611,7 +2611,7 @@ mod section_tests {
     fn queue(session: &LiveSession, index: usize, destination: &SongState) {
         let snapshot = Arc::new(LiveSessionSnapshot::from_song(destination));
         session.update(|s| {
-            s.pending_section = Some(PendingSection {
+            s.pending_state = Some(PendingState {
                 index,
                 snapshot: snapshot.clone(),
             })
@@ -2628,18 +2628,18 @@ mod section_tests {
         }
     }
 
-    /// Plays until a section lands and returns the beat the landing sample
+    /// Plays until a state lands and returns the beat the landing sample
     /// started on, i.e. the beat the old song had reached.
     fn play_to_landing(engine: &mut FluidEngine, session: &LiveSession) -> f64 {
         for _ in 0..400_000 {
             let before = engine.tempo.beat;
-            let generation = session.load().section_revision;
+            let generation = session.load().state_revision;
             engine.next_stereo();
-            if session.load().section_revision != generation {
+            if session.load().state_revision != generation {
                 return before;
             }
         }
-        panic!("the queued section never landed");
+        panic!("the queued state never landed");
     }
 
     fn assert_on_wrap(landed_at: f64, wrap: f64, engine: &FluidEngine) {
@@ -2651,7 +2651,7 @@ mod section_tests {
     }
 
     #[test]
-    fn a_queued_section_lands_exactly_on_the_phrase_wrap_and_starts_at_beat_zero() {
+    fn a_queued_state_lands_exactly_on_the_phrase_wrap_and_starts_at_beat_zero() {
         let (session, mut engine) = engine_for(&short_song(120.0));
         let destination = short_song(90.0);
         play_until_beat(&mut engine, 3.0);
@@ -2660,16 +2660,54 @@ mod section_tests {
         // phrase wraps at 8.
         let landed_at = play_to_landing(&mut engine, &session);
         assert_on_wrap(landed_at, 8.0, &engine);
-        assert_eq!(session.load().current_section, Some(1));
+        assert_eq!(session.load().current_state, Some(1));
         assert!(engine.tempo.beat < 0.01, "destination starts at beat zero");
         assert_eq!(session.load().controls.master.bpm, 90.0);
-        assert!(session.load().pending_section.is_none());
+        assert!(session.load().pending_state.is_none());
         // The destination's own phrase is what the next queue waits for.
         play_until_beat(&mut engine, 1.0);
         queue(&session, 0, &short_song(120.0));
         let again = play_to_landing(&mut engine, &session);
         assert_on_wrap(again, 8.0, &engine);
-        assert_eq!(session.load().previous_section, Some(1));
+        assert_eq!(session.load().previous_state, Some(1));
+    }
+
+    /// A hold across a landing must not loop the song swap: the cut is hidden
+    /// by the engine's fade only once, so a loop that carried it would click
+    /// on every repeat. Worst jump is compared with the same landing dry.
+    #[test]
+    fn beat_repeat_held_across_a_state_landing_adds_no_click() {
+        let worst_jump = |hold: bool, hold_at: f64| {
+            let (session, mut engine) = engine_for(&short_song(120.0));
+            engine.reseed(5);
+            play_until_beat(&mut engine, hold_at);
+            if hold {
+                let now = session.audio_seconds();
+                session.update(|s| s.gestures.press(GestureKind::BeatRepeat, now));
+            }
+            queue(&session, 1, &short_song(90.0));
+            let landed_at = play_to_landing(&mut engine, &session);
+            assert!(landed_at > 7.9, "landed at {landed_at}");
+            let mut previous = engine.next_stereo();
+            let mut worst = 0.0_f32;
+            // Past the landing fade, across several repeats of the new song.
+            for frame in 0..RATE as usize * 8 {
+                let next = engine.next_stereo();
+                if frame > (RATE * 0.05) as usize {
+                    worst = worst.max((next.0 - previous.0).abs());
+                }
+                previous = next;
+            }
+            worst
+        };
+        for hold_at in [2.5, 7.2] {
+            let dry = worst_jump(false, hold_at);
+            let held = worst_jump(true, hold_at);
+            assert!(
+                held < dry * 2.0 + 0.01,
+                "hold from beat {hold_at}: dry worst {dry}, held worst {held}"
+            );
+        }
     }
 
     #[test]
@@ -2693,17 +2731,17 @@ mod section_tests {
         play_until_beat(&mut engine, 1.0);
         queue(&session, 1, &short_song(100.0));
         play_until_beat(&mut engine, 6.0);
-        session.update(|s| s.pending_section = None);
+        session.update(|s| s.pending_state = None);
         play_until_beat(&mut engine, 9.0);
-        assert_eq!(session.load().current_section, None);
-        assert!(engine.section_gain > 0.99, "cancel recovers the fade");
+        assert_eq!(session.load().current_state, None);
+        assert!(engine.state_gain > 0.99, "cancel recovers the fade");
         // A replacement queued before the wrap lands once, at that wrap.
         queue(&session, 2, &short_song(100.0));
         play_until_beat(&mut engine, 12.0);
         queue(&session, 3, &short_song(80.0));
         let landed_at = play_to_landing(&mut engine, &session);
         assert_on_wrap(landed_at, 16.0, &engine);
-        assert_eq!(session.load().current_section, Some(3));
+        assert_eq!(session.load().current_state, Some(3));
         assert_eq!(session.load().controls.master.bpm, 80.0);
     }
 
@@ -2721,7 +2759,7 @@ mod section_tests {
         queue(&session, 1, &short_song(90.0));
         assert_on_wrap(play_to_landing(&mut engine, &session), 8.0, &engine);
         // The fade stays continuous even with no room to ramp.
-        assert!(engine.section_gain.is_finite());
+        assert!(engine.state_gain.is_finite());
     }
 
     /// A queue the engine sees by the sample that crosses the wrap belongs to
@@ -2742,7 +2780,7 @@ mod section_tests {
             engine.next_stereo();
         }
         engine.next_stereo(); // the crossing sample, nothing queued
-        assert_eq!(session.load().current_section, None);
+        assert_eq!(session.load().current_state, None);
         queue(&session, 1, &short_song(90.0));
         assert_on_wrap(play_to_landing(&mut engine, &session), 16.0, &engine);
     }
@@ -2807,8 +2845,8 @@ mod section_tests {
         for _ in 0..20_000 {
             engine.next_stereo();
         }
-        assert!(session.load().pending_section.is_some());
-        assert_eq!(session.load().current_section, None);
+        assert!(session.load().pending_state.is_some());
+        assert_eq!(session.load().current_state, None);
         effects.start_transport();
         // Restart is beat zero of a fresh phrase: the first phrase end after
         // it is a whole phrase away, where the bar rule's first new bar was
@@ -2833,7 +2871,7 @@ mod section_tests {
     }
 
     #[test]
-    fn the_published_phrase_end_is_the_same_beat_the_section_lands_on() {
+    fn the_published_phrase_end_is_the_same_beat_the_state_lands_on() {
         let (session, mut engine) = engine_for(&short_song(120.0));
         assert_eq!(session.audio_phrase_end(), None);
         play_until_beat(&mut engine, 1.0);
@@ -2887,19 +2925,19 @@ mod section_tests {
         queue(&session, 0, &short_song(120.0));
         for _ in 0..1000 {
             engine.next_stereo();
-            if engine.section_gain < 0.7 {
+            if engine.state_gain < 0.7 {
                 break;
             }
         }
-        assert!(engine.section_gain < 0.7);
-        session.update(|s| s.pending_section = None);
-        let mut previous = engine.section_gain;
+        assert!(engine.state_gain < 0.7);
+        session.update(|s| s.pending_state = None);
+        let mut previous = engine.state_gain;
         for _ in 0..400 {
             engine.next_stereo();
-            assert!((engine.section_gain - previous).abs() <= 0.026);
-            previous = engine.section_gain;
+            assert!((engine.state_gain - previous).abs() <= 0.026);
+            previous = engine.state_gain;
         }
-        assert!(engine.section_gain > 0.99);
-        assert_eq!(session.load().current_section, None);
+        assert!(engine.state_gain > 0.99);
+        assert_eq!(session.load().current_state, None);
     }
 }

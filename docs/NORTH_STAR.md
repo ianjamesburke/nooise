@@ -84,6 +84,6 @@ perform without looking at the screen, from muscle memory. Arrows, Enter and
 Escape stay as the onboarding floor. The whole control surface (entering
 layers, the step sequencer, per-layer amounts) should over time gain a
 keyboard-native route that works eyes-closed, explored incrementally one area
-at a time. Section marks (`'` to recall, `"` to store) are the first step.
+at a time. State marks (`'` to recall, `"` to store) are the first step.
 
 None of these are directly portable — nooise's control surface is sliders/pages, not a timeline or a text buffer — but they're the reference set to study before designing the advanced layer.

@@ -7,7 +7,7 @@ use super::*;
 use crate::fluid::interaction::{
     ArpDrill, AutomationKind, AutomationMode, BassDrill, ChordDrill, ClapDrill, InteractionMode,
     InteractionModel, JumpStage, KickDrill, LEAD_NUDGES, LeadDrill, Navigation, PercDrill,
-    PerformanceInstrument, PerformanceMode, SectionLeader, TonalDrill, hub_layer,
+    PerformanceInstrument, PerformanceMode, StateLeader, TonalDrill, hub_layer,
 };
 
 /// The minimum supported frame. Every top-level and nested owner must render
@@ -25,7 +25,7 @@ pub(crate) enum KeyboardOwner {
     Lfo,
     Envelope,
     PerformanceJump,
-    PerformanceSections,
+    PerformanceStates,
     Lead,
     Help,
 }
@@ -39,7 +39,7 @@ impl KeyboardOwner {
             Self::Lfo => AutomationKind::Lfo.label(),
             Self::Envelope => AutomationKind::Envelope.label(),
             Self::PerformanceJump => "JUMP",
-            Self::PerformanceSections => "SECTIONS",
+            Self::PerformanceStates => "STATES",
             Self::Lead => "LEAD",
             Self::Help => "SHORTCUTS",
         }
@@ -109,7 +109,7 @@ pub(crate) struct TelemetryView {
     /// Each module slot's compressor gain reduction in dB, indexed by
     /// `module_layer_index(tab) * MODULE_SLOTS + slot`.
     pub(crate) gain_reduction_db: [f32; MODULE_SLOT_TOTAL],
-    /// The beat a queued section lands on (the sounding phrase's end), or
+    /// The beat a queued state lands on (the sounding phrase's end), or
     /// `None` when nothing is queued.
     pub(crate) phrase_end_beat: Option<f64>,
 }
@@ -137,9 +137,9 @@ pub(crate) struct ViewPresentation<'a> {
     pub(crate) notices: ViewNotices,
     pub(crate) gesture_now_seconds: f64,
     pub(crate) gesture_holds_available: bool,
-    /// Which section slots hold a song. Bank state, not audio state, so it
+    /// Which state slots hold a song. Bank state, not audio state, so it
     /// reaches the view from the UI-side executor and not the session.
-    pub(crate) filled_sections: [bool; sections::SECTION_COUNT],
+    pub(crate) filled_states: [bool; states::STATE_COUNT],
 }
 
 /// Everything a projection consumes. The session is *one* generation: fields
@@ -177,7 +177,7 @@ pub(crate) struct UiViewModel<'a> {
     /// True while `activity` is a live readout (stopped clock or held/returning
     /// gesture) rather than the idle key-hint list, so the row can render with different emphasis.
     pub(crate) activity_live: bool,
-    pub(crate) filled_sections: [bool; sections::SECTION_COUNT],
+    pub(crate) filled_states: [bool; states::STATE_COUNT],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -332,7 +332,7 @@ impl AutomationSurface<'_> {
 pub(crate) enum PerformanceSurface {
     ChooseLayer,
     ChooseParameter { instrument: PerformanceInstrument },
-    Sections { leader: SectionLeader },
+    States { leader: StateLeader },
 }
 
 #[cfg(test)]
@@ -501,7 +501,7 @@ impl<'a> UiViewModel<'a> {
             help,
             activity,
             activity_live,
-            filled_sections: presentation.filled_sections,
+            filled_states: presentation.filled_states,
         }
     }
 }
@@ -750,8 +750,8 @@ fn mode_surface<'a>(
         }) => ModeSurface::Performance(PerformanceSurface::ChooseParameter {
             instrument: *instrument,
         }),
-        InteractionMode::Performance(PerformanceMode::Sections { leader }) => {
-            ModeSurface::Performance(PerformanceSurface::Sections { leader: *leader })
+        InteractionMode::Performance(PerformanceMode::States { leader }) => {
+            ModeSurface::Performance(PerformanceSurface::States { leader: *leader })
         }
     }
 }
@@ -903,8 +903,8 @@ pub(crate) fn keyboard_owner(mode: &InteractionMode) -> KeyboardOwner {
         InteractionMode::Performance(PerformanceMode::Jump { .. }) => {
             KeyboardOwner::PerformanceJump
         }
-        InteractionMode::Performance(PerformanceMode::Sections { .. }) => {
-            KeyboardOwner::PerformanceSections
+        InteractionMode::Performance(PerformanceMode::States { .. }) => {
+            KeyboardOwner::PerformanceStates
         }
         InteractionMode::Lead(_) => KeyboardOwner::Lead,
         InteractionMode::Help => KeyboardOwner::Help,
@@ -1069,14 +1069,14 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
             }
             _ => unreachable!("jump owner requires a jump surface"),
         },
-        KeyboardOwner::PerformanceSections => match mode {
-            ModeSurface::Performance(PerformanceSurface::Sections {
-                leader: SectionLeader::Queue,
-            }) => "SECTIONS · 1-9 queue   ' previous   Esc".to_string(),
-            ModeSurface::Performance(PerformanceSurface::Sections {
-                leader: SectionLeader::Store,
-            }) => "SECTIONS · 1-9 store   Esc".to_string(),
-            _ => unreachable!("sections owner requires a sections surface"),
+        KeyboardOwner::PerformanceStates => match mode {
+            ModeSurface::Performance(PerformanceSurface::States {
+                leader: StateLeader::Queue,
+            }) => "STATES · 1-9 queue   ' previous   Esc".to_string(),
+            ModeSurface::Performance(PerformanceSurface::States {
+                leader: StateLeader::Store,
+            }) => "STATES · 1-9 store   Esc".to_string(),
+            _ => unreachable!("states owner requires a states surface"),
         },
         KeyboardOwner::Help => "SHORTCUTS · Esc: close".to_string(),
     }
@@ -1202,7 +1202,7 @@ mod tests {
                 notices: ViewNotices::default(),
                 gesture_now_seconds: 0.0,
                 gesture_holds_available: true,
-                filled_sections: [false; sections::SECTION_COUNT],
+                filled_states: [false; states::STATE_COUNT],
             },
         });
         assert_eq!(
@@ -1428,7 +1428,7 @@ mod tests {
                 notices: ViewNotices::default(),
                 gesture_now_seconds: 0.0,
                 gesture_holds_available: true,
-                filled_sections: [false; sections::SECTION_COUNT],
+                filled_states: [false; states::STATE_COUNT],
             },
         });
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -1526,11 +1526,11 @@ mod tests {
     }
 
     #[test]
-    fn queued_sections_and_performance_overlays_remain_visible_together() {
+    fn queued_states_and_performance_overlays_remain_visible_together() {
         let interaction = InteractionModel::default();
         let mut session = session();
-        session.current_section = Some(0);
-        session.pending_section = Some(PendingSection {
+        session.current_state = Some(0);
+        session.pending_state = Some(PendingState {
             index: 1,
             snapshot: Arc::new(LiveSessionSnapshot::from_song(&SongState::default())),
         });
@@ -1559,23 +1559,23 @@ mod tests {
                 assert!(frame.contains(expected), "missing {expected}: {frame}");
             }
             if std::env::var_os("NOOISE_PRINT_STATUS_FRAMES").is_some() {
-                println!("{width}x{height} combined queued section:\n{frame}");
+                println!("{width}x{height} combined queued state:\n{frame}");
             }
         }
-        session.pending_section = None;
+        session.pending_state = None;
         let frame = render_model_with_session(&interaction, &session);
-        assert!(frame.contains("SECTION␠1"), "{frame}");
+        assert!(frame.contains("STATE␠1"), "{frame}");
     }
 
-    fn render_sections_leader(
-        leader: SectionLeader,
+    fn render_states_leader(
+        leader: StateLeader,
         session: &LiveSessionSnapshot,
-        filled: [bool; sections::SECTION_COUNT],
+        filled: [bool; states::STATE_COUNT],
         width: u16,
         height: u16,
     ) -> String {
         let interaction = InteractionModel {
-            mode: InteractionMode::Performance(PerformanceMode::Sections { leader }),
+            mode: InteractionMode::Performance(PerformanceMode::States { leader }),
             ..InteractionModel::default()
         };
         let fluid = RippleField::new();
@@ -1591,7 +1591,7 @@ mod tests {
                 notices: ViewNotices::default(),
                 gesture_now_seconds: 0.0,
                 gesture_holds_available: true,
-                filled_sections: filled,
+                filled_states: filled,
             },
         });
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -1601,8 +1601,8 @@ mod tests {
 
     fn marked_session() -> LiveSessionSnapshot {
         let mut session = session();
-        session.current_section = Some(1);
-        session.pending_section = Some(PendingSection {
+        session.current_state = Some(1);
+        session.pending_state = Some(PendingState {
             index: 4,
             snapshot: Arc::new(LiveSessionSnapshot::from_song(&SongState::default())),
         });
@@ -1611,19 +1611,19 @@ mod tests {
 
     #[test]
     fn queue_leader_overlay_lists_nine_slots_with_marks_at_minimum_size() {
-        let mut filled = [false; sections::SECTION_COUNT];
+        let mut filled = [false; states::STATE_COUNT];
         for index in [0, 1, 4, 7] {
             filled[index] = true;
         }
-        let frame = render_sections_leader(
-            SectionLeader::Queue,
+        let frame = render_states_leader(
+            StateLeader::Queue,
             &marked_session(),
             filled,
             MIN_TERMINAL_WIDTH,
             MIN_TERMINAL_HEIGHT,
         );
         for text in [
-            "Queue␠section",
+            "Queue␠state",
             "1␠filled",
             "2␠now",
             "3␠empty",
@@ -1633,7 +1633,7 @@ mod tests {
             "1-9␠Queue",
             "'␠Previous",
             "Esc␠␠Cancel",
-            "SECTIONS␠·␠1-9␠queue",
+            "STATES␠·␠1-9␠queue",
         ] {
             assert!(frame.contains(text), "missing {text:?}:\n{frame}");
         }
@@ -1642,24 +1642,24 @@ mod tests {
 
     #[test]
     fn store_leader_overlay_says_store_and_fits_the_minimum_frame() {
-        let frame = render_sections_leader(
-            SectionLeader::Store,
+        let frame = render_states_leader(
+            StateLeader::Store,
             &session(),
-            [true; sections::SECTION_COUNT],
+            [true; states::STATE_COUNT],
             MIN_TERMINAL_WIDTH,
             MIN_TERMINAL_HEIGHT,
         );
-        for text in ["Store␠section", "9␠filled", "1-9␠Store␠here", "Esc␠␠Cancel"] {
+        for text in ["Store␠state", "9␠filled", "1-9␠Store␠here", "Esc␠␠Cancel"] {
             assert!(frame.contains(text), "missing {text:?}:\n{frame}");
         }
         assert!(!frame.contains("Queue"), "{frame}");
-        for leader in [SectionLeader::Queue, SectionLeader::Store] {
+        for leader in [StateLeader::Queue, StateLeader::Store] {
             let mut session = marked_session();
-            session.current_section = session.pending_section.as_ref().map(|p| p.index);
-            let frame = render_sections_leader(
+            session.current_state = session.pending_state.as_ref().map(|p| p.index);
+            let frame = render_states_leader(
                 leader,
                 &session,
-                [true; sections::SECTION_COUNT],
+                [true; states::STATE_COUNT],
                 MIN_TERMINAL_WIDTH,
                 MIN_TERMINAL_HEIGHT,
             );
@@ -1668,12 +1668,12 @@ mod tests {
     }
 
     #[test]
-    fn section_leader_footers_fit_the_minimum_frame() {
+    fn state_leader_footers_fit_the_minimum_frame() {
         let session = session();
-        for leader in [SectionLeader::Queue, SectionLeader::Store] {
-            let mode = InteractionMode::Performance(PerformanceMode::Sections { leader });
+        for leader in [StateLeader::Queue, StateLeader::Store] {
+            let mode = InteractionMode::Performance(PerformanceMode::States { leader });
             let line = owner_help(
-                KeyboardOwner::PerformanceSections,
+                KeyboardOwner::PerformanceStates,
                 &mode_surface(&mode, Tab::Bass, &session.controls, &session.automation),
             );
             assert!(
@@ -1708,8 +1708,8 @@ mod tests {
 
     fn queued_session() -> LiveSessionSnapshot {
         let mut session = session();
-        session.current_section = Some(0);
-        session.pending_section = Some(PendingSection {
+        session.current_state = Some(0);
+        session.pending_state = Some(PendingState {
             index: 1,
             snapshot: Arc::new(LiveSessionSnapshot::from_song(&SongState::default())),
         });
@@ -1749,8 +1749,8 @@ mod tests {
     #[test]
     fn queued_header_countdown_fits_the_minimum_frame_for_every_progression() {
         let mut session = queued_session();
-        session.current_section = Some(7);
-        session.pending_section.as_mut().unwrap().index = 8;
+        session.current_state = Some(7);
+        session.pending_state.as_mut().unwrap().index = 8;
         for progression in 0..PROGRESSIONS.len() {
             session.controls.pad.progression = progression as f32;
             let line = key_line_with_queue(&session, 0.0, Some(2048.0));
@@ -1852,7 +1852,7 @@ mod tests {
                 notices: ViewNotices::default(),
                 gesture_now_seconds: 0.0,
                 gesture_holds_available: true,
-                filled_sections: [false; sections::SECTION_COUNT],
+                filled_states: [false; states::STATE_COUNT],
             },
         })
         .items
@@ -1910,7 +1910,7 @@ mod tests {
                 notices: ViewNotices::default(),
                 gesture_now_seconds: 0.0,
                 gesture_holds_available: true,
-                filled_sections: [false; sections::SECTION_COUNT],
+                filled_states: [false; states::STATE_COUNT],
             },
         });
 
@@ -1961,7 +1961,7 @@ mod tests {
                 notices: ViewNotices::default(),
                 gesture_now_seconds: 0.0,
                 gesture_holds_available: true,
-                filled_sections: [false; sections::SECTION_COUNT],
+                filled_states: [false; states::STATE_COUNT],
             },
         });
 
@@ -2048,7 +2048,7 @@ mod tests {
                 },
                 gesture_now_seconds: 0.0,
                 gesture_holds_available: true,
-                filled_sections: [false; sections::SECTION_COUNT],
+                filled_states: [false; states::STATE_COUNT],
             },
         });
 

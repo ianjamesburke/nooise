@@ -856,7 +856,7 @@ impl ReplayHarness {
                 },
                 gesture_now_seconds: self.clock.now().as_secs_f64(),
                 gesture_holds_available: self.capabilities.supports_holds(),
-                filled_sections: self.executor.filled_sections(),
+                filled_states: self.executor.filled_states(),
             },
         })
     }

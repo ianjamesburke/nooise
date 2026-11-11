@@ -63,10 +63,10 @@ mod registry;
 #[cfg(test)]
 mod replay;
 mod runtime;
-mod sections;
 mod session;
 mod song;
 mod song_ids;
+mod states;
 mod ui;
 mod view;
 mod visualizer;
@@ -100,7 +100,7 @@ use operation::*;
 use palette::*;
 use planned::*;
 use registry::*;
-use session::PendingSection;
+use session::PendingState;
 use session::*;
 pub(crate) use song::{CODE_PREFIX, SongState, decode_song_code, encode_song_code};
 use ui::*;
@@ -612,7 +612,7 @@ fn run_interactive(
         updates,
         AutoControls::new(morph, auto_states, auto_bars),
         LiveAdapters {
-            section_path: options.set,
+            state_path: options.set,
             output_routing,
             chassis_tap,
             osc_rx,
