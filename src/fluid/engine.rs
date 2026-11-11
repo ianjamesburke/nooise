@@ -728,7 +728,8 @@ pub(crate) struct FluidEngine {
     /// session identity changes, without comparing or cloning automation maps.
     plan: AutomationPlan,
     /// The published generation this engine has observed: its only retained
-    /// session reference.
+    /// session reference. Superseded generations go to `LiveSession::retire`,
+    /// so the audio thread never frees one.
     observed: Arc<LiveSessionSnapshot>,
     /// `observed` changed since its state was last applied to the engine.
     observed_unapplied: bool,
@@ -765,7 +766,8 @@ impl FluidEngine {
             initial_pad.chord_offset = f32::from(vamp.slot);
         }
         let mut plan = AutomationPlan::default();
-        plan.rebuild(&live.automation);
+        // Construction runs off the audio thread; an empty plan has no storage.
+        let _ = plan.rebuild(&live.automation);
         Self {
             current_sample: 0,
             sample_rate,
@@ -1348,13 +1350,17 @@ impl StereoEngine for FluidEngine {
 }
 
 impl FluidEngine {
-    /// Adopt a newer published generation, if there is one.
+    /// Adopt a newer published generation, if there is one. The superseded
+    /// Arc is retired rather than dropped: the publisher has usually released
+    /// it already, so this engine may hold its last reference.
     fn observe_published(&mut self) -> bool {
         let published = self.session.published();
         if Arc::ptr_eq(&published, &self.observed) {
             return false;
         }
-        self.observed = arc_swap::Guard::into_inner(published);
+        let previous =
+            std::mem::replace(&mut self.observed, arc_swap::Guard::into_inner(published));
+        self.session.retire(Retired::Snapshot(previous));
         self.observed_unapplied = true;
         true
     }
@@ -1398,7 +1404,9 @@ impl FluidEngine {
         self.lead.observe(session.lead_play);
         self.master_bus
             .set_controls(&self.snapshot.master, self.sample_rate);
-        self.plan.rebuild(&session.automation);
+        if let Some(retired) = self.plan.rebuild(&session.automation) {
+            self.session.retire(Retired::AutomationRoutes(retired));
+        }
     }
 
     /// Start the existing click-free gate early enough that it reaches its
@@ -1670,6 +1678,9 @@ mod planned_mute_tests {
         engine.next_stereo();
         assert!(Arc::ptr_eq(&engine.observed, &session.load()));
         assert_eq!(engine.snapshot.master.level, 0.4);
+        // The superseded generation waits for a non-audio thread.
+        drop(original);
+        assert_eq!(session.reclaim(), 1);
     }
 
     #[test]
@@ -1724,6 +1735,67 @@ mod planned_mute_tests {
         assert!(!session.load().muted[Tab::Kick as usize]);
         assert_eq!(session.load().planned, None);
         assert_eq!(engine.mute_gates.gates[Tab::Kick as usize].current, 1.0);
+    }
+}
+
+#[cfg(test)]
+mod retire_tests {
+    use super::*;
+    use crate::alloc_count::{HeapTraffic, count};
+    use crate::fluid::auto::decode_auto_states;
+
+    /// A UI edit is observed on the next sample. On an automated song that
+    /// sample rebuilds the automation plan, and the superseded snapshot and
+    /// route storage must reach the UI thread instead of being freed here.
+    #[test]
+    fn ui_edits_on_an_automated_song_free_nothing_on_the_audio_thread() {
+        let song = &decode_auto_states()[2];
+        let session = LiveSession::new(LiveSessionSnapshot::from_song(song));
+        let mut engine = FluidEngine::new(
+            44_100.0,
+            session.clone(),
+            no_morph(),
+            Arc::new(FluidTelemetry::default()),
+        );
+        engine.reseed(3);
+        for _ in 0..44_100 {
+            engine.next_stereo();
+        }
+        assert!(engine.plan.live_routes() > 0, "song must carry automation");
+        let lfo = ControlAddress::new("pad.level");
+        let mut observed = HeapTraffic::default();
+        for edit in 0..48 {
+            // Alternate a plain knob edit with adding and clearing a lane, so
+            // routes are rebuilt, carried, faded and removed.
+            session.update(|snapshot| match edit % 3 {
+                0 => snapshot.controls.master.level = 0.5 + 0.004 * edit as f32,
+                1 => {
+                    snapshot.automation.add_route(lfo, LfoRoute::default());
+                }
+                _ => snapshot.automation.clear_control(lfo),
+            });
+            let before = Arc::as_ptr(&engine.observed);
+            let ((), traffic) = count(|| {
+                engine.next_stereo();
+            });
+            assert_ne!(
+                Arc::as_ptr(&engine.observed),
+                before,
+                "edit {edit} observed"
+            );
+            assert_eq!(traffic.frees, 0, "edit {edit} freed on the audio thread");
+            observed += traffic;
+            // The UI turn loop frees what was retired.
+            assert!(session.reclaim() >= 1);
+            for _ in 0..2_048 {
+                engine.next_stereo();
+            }
+            session.reclaim();
+        }
+        assert_eq!(session.retire_overflows(), 0);
+        // The plan rebuild still allocates its new routes (out of scope);
+        // print it so the remaining half stays visible.
+        println!("48 observed edits: {observed:?}");
     }
 }
 

@@ -121,6 +121,10 @@ fn engine_perf_probe() {
                         snap.controls.master.level = 0.5 + 0.001 * ((b / 8) % 100) as f32;
                     });
                 }
+                // The UI turn loop's reclaim, at its 33 ms tick.
+                if b % 6 == 0 {
+                    s.reclaim();
+                }
             }),
         );
     }

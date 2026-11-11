@@ -769,12 +769,28 @@ impl AutomationState {
             .map_or(&[], |stack| stack.envelopes.as_slice())
     }
 
-    fn modulated_addresses(&self) -> BTreeSet<ControlAddress> {
-        self.stacks
-            .keys()
-            .chain(self.captures.keys())
-            .copied()
-            .collect()
+    /// Every modulated control in address order, each once: a merge of the
+    /// two sorted key sets that needs no scratch set, so the audio thread's
+    /// plan rebuild frees nothing.
+    fn modulated_addresses(&self) -> impl Iterator<Item = ControlAddress> + '_ {
+        let mut stacks = self.stacks.keys().copied().peekable();
+        let mut captures = self.captures.keys().copied().peekable();
+        std::iter::from_fn(move || match (stacks.peek(), captures.peek()) {
+            (Some(stack), Some(capture)) => match stack.cmp(capture) {
+                Ordering::Less => stacks.next(),
+                Ordering::Greater => captures.next(),
+                Ordering::Equal => {
+                    captures.next();
+                    stacks.next()
+                }
+            },
+            (Some(_), None) => stacks.next(),
+            (None, _) => captures.next(),
+        })
+    }
+
+    fn modulated_address_count(&self) -> usize {
+        self.modulated_addresses().count()
     }
 
     pub(crate) fn snapshot_at(&self, beat: f64) -> Self {
@@ -1033,6 +1049,9 @@ struct PlannedRoute {
     editor_captures: Vec<PlannedEditorMotion>,
     smoothed_delta: Option<f32>,
     base_value: f32,
+    /// A removed route whose de-click has decayed. It stays in storage until
+    /// the next rebuild retires it, so the audio thread never frees it.
+    finished: bool,
 }
 
 struct PlannedEditorMotion {
@@ -1077,15 +1096,33 @@ pub(crate) struct AutomationPlan {
     coefficient: f32,
 }
 
+/// Route storage a rebuild replaced. Opaque: it is only ever dropped, and the
+/// engine hands it to `LiveSession::retire` so that happens off the audio thread.
+// Never read: the routes exist only to be dropped off the audio thread.
+#[allow(dead_code)]
+pub(crate) struct RetiredRoutes(Vec<PlannedRoute>);
+
 impl AutomationPlan {
-    pub(crate) fn rebuild(&mut self, automation: &AutomationState) {
+    /// Replace the routes with `automation`'s, carrying each surviving
+    /// control's de-click state and letting removed ones fade out. The
+    /// previous storage is returned, not dropped, so the caller decides which
+    /// thread frees it. `None` when there was no storage to free.
+    pub(crate) fn rebuild(&mut self, automation: &AutomationState) -> Option<RetiredRoutes> {
         let mut previous = std::mem::take(&mut self.routes);
-        let addresses = automation.modulated_addresses();
-        for address in addresses {
+        // One allocation sized for every live and fading route: pushing below
+        // never reallocates, and a reallocation would free on this thread.
+        self.routes
+            .reserve_exact(automation.modulated_address_count() + previous.len());
+        for address in automation.modulated_addresses() {
+            // A matched route is consumed: marked finished so it is neither
+            // matched again nor carried forward as fading.
             let smoothed_delta = previous
-                .iter()
-                .position(|route| route.address == address)
-                .and_then(|index| previous.swap_remove(index).smoothed_delta);
+                .iter_mut()
+                .find(|route| !route.finished && route.address == address)
+                .and_then(|route| {
+                    route.finished = true;
+                    route.smoothed_delta
+                });
             let spec = address.spec();
             self.routes.push(PlannedRoute {
                 address,
@@ -1111,19 +1148,43 @@ impl AutomationPlan {
                     .collect(),
                 smoothed_delta,
                 base_value: 0.0,
+                finished: false,
             });
         }
-        for mut removed in previous {
-            removed.lfos.clear();
-            removed.envelopes.clear();
-            removed.capture = None;
-            removed.editor_captures.clear();
-            self.routes.push(removed);
+        // Removed routes fade from their last delta with no lanes. The copy
+        // owns no heap; the original stays in `previous` for retirement.
+        for removed in previous.iter().filter(|route| !route.finished) {
+            self.routes.push(PlannedRoute {
+                address: removed.address,
+                spec: removed.spec,
+                slot_address: removed.slot_address,
+                lfos: Vec::new(),
+                envelopes: Vec::new(),
+                capture: None,
+                editor_captures: Vec::new(),
+                smoothed_delta: removed.smoothed_delta,
+                base_value: removed.base_value,
+                finished: false,
+            });
         }
         // Chord fields resolve through the selected progression's bank. Its
         // automation must select that bank before any field reads or writes.
-        self.routes
-            .sort_by_key(|route| route.address.id() != "pad.progression");
+        // A rotation keeps every other route in order without the scratch
+        // buffer a stable sort allocates.
+        if let Some(index) = self
+            .routes
+            .iter()
+            .position(|route| route.address.id() == "pad.progression")
+        {
+            self.routes[..=index].rotate_right(1);
+        }
+        (previous.capacity() > 0).then_some(RetiredRoutes(previous))
+    }
+
+    /// Routes still applied each sample, fading ones included.
+    #[cfg(test)]
+    pub(crate) fn live_routes(&self) -> usize {
+        self.routes.iter().filter(|route| !route.finished).count()
     }
 
     pub(crate) fn apply(&mut self, controls: &mut FluidControls, timing: TimingContext) {
@@ -1139,6 +1200,9 @@ impl AutomationPlan {
             kick_offset_beats: controls.kick.offset_beats,
         };
         for planned in &mut self.routes {
+            if planned.finished {
+                continue;
+            }
             for motion in &planned.editor_captures {
                 if let Some(position) = motion
                     .clip
@@ -1185,11 +1249,13 @@ impl AutomationPlan {
     /// Undo only this sample's writes, in reverse dependency order. Keeping
     /// the working controls avoids copying authored banks and Arc ownership.
     pub(crate) fn restore(&mut self, controls: &mut FluidControls) {
-        for route in self.routes.iter().rev() {
+        for route in self.routes.iter().rev().filter(|route| !route.finished) {
             (route.spec.set)(controls, route.base_value);
         }
         controls.pad.evaluated_chords = None;
-        self.routes.retain(|route| !route.is_finished_fading());
+        for route in &mut self.routes {
+            route.finished |= route.is_finished_fading();
+        }
     }
 }
 

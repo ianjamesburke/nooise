@@ -5,6 +5,10 @@
 //! audio thread only ever reads one coherent generation.
 
 use super::*;
+use std::sync::Mutex;
+use std::sync::mpsc::{self, Receiver, SyncSender};
+
+use super::automation::RetiredRoutes;
 
 #[derive(Clone)]
 pub(crate) struct PendingState {
@@ -144,9 +148,37 @@ impl LiveSessionSnapshot {
     }
 }
 
+/// Heap the audio thread lets go of. It is never dropped there: the engine
+/// hands it to `LiveSession::retire`, and a non-audio thread frees it in
+/// `LiveSession::reclaim`.
+pub(crate) enum Retired {
+    /// A published generation the engine observed and has moved past.
+    // Never read: the payload exists only to be dropped by `reclaim`.
+    #[allow(dead_code)]
+    Snapshot(Arc<LiveSessionSnapshot>),
+    /// The automation plan's previous route storage.
+    // Never read: the payload exists only to be dropped by `reclaim`.
+    #[allow(dead_code)]
+    AutomationRoutes(RetiredRoutes),
+}
+
+/// Retired heap waiting for a non-audio thread. Holds one UI-loop interval of
+/// audio-side session changes with wide margin.
+const RETIRE_CAPACITY: usize = 512;
+
+struct RetireQueue {
+    /// Bounded and preallocated: `try_send` never allocates or blocks, and no
+    /// receiver ever waits, so a send never wakes a thread.
+    sender: SyncSender<Retired>,
+    receiver: Mutex<Receiver<Retired>>,
+    /// Items the audio thread had to free itself because the queue was full.
+    overflowed: AtomicU64,
+}
+
 #[derive(Clone)]
 pub(crate) struct LiveSession {
     published: Arc<ArcSwap<LiveSessionSnapshot>>,
+    retired: Arc<RetireQueue>,
     /// Audio-owned monotonic clock; gestures store their anchors in the
     /// aggregate snapshot, while readers sample this clock without a lock.
     audio_seconds_bits: Arc<AtomicU64>,
@@ -159,8 +191,14 @@ pub(crate) struct LiveSession {
 
 impl LiveSession {
     pub(crate) fn new(snapshot: LiveSessionSnapshot) -> Self {
+        let (sender, receiver) = mpsc::sync_channel(RETIRE_CAPACITY);
         Self {
             published: Arc::new(ArcSwap::from_pointee(snapshot)),
+            retired: Arc::new(RetireQueue {
+                sender,
+                receiver: Mutex::new(receiver),
+                overflowed: AtomicU64::new(0),
+            }),
             audio_seconds_bits: Arc::new(AtomicU64::new(0)),
             audio_beat_bits: Arc::new(AtomicU64::new(0)),
             audio_phrase_start_bits: Arc::new(AtomicU64::new(0)),
@@ -178,6 +216,30 @@ impl LiveSession {
     /// dropped never releases the last reference.
     pub(crate) fn published(&self) -> arc_swap::Guard<Arc<LiveSessionSnapshot>> {
         self.published.load()
+    }
+
+    /// Queue heap for `reclaim`. Never blocks or allocates; when the queue
+    /// is full the caller frees it in place and `retire_overflows` counts it.
+    pub(crate) fn retire(&self, item: Retired) {
+        if self.retired.sender.try_send(item).is_err() {
+            self.retired.overflowed.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Free everything the audio thread retired, on the calling thread.
+    /// Called from the UI turn loop; returns how many items it dropped.
+    pub(crate) fn reclaim(&self) -> usize {
+        match self.retired.receiver.try_lock() {
+            Ok(receiver) => receiver.try_iter().count(),
+            Err(_) => 0,
+        }
+    }
+
+    /// How many retired items were freed by their sender because `reclaim`
+    /// had fallen a full queue behind.
+    #[cfg(test)]
+    pub(crate) fn retire_overflows(&self) -> u64 {
+        self.retired.overflowed.load(Ordering::Relaxed)
     }
 
     pub(crate) fn audio_seconds(&self) -> f64 {

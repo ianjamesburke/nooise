@@ -852,6 +852,8 @@ pub(crate) fn production_ui_loop(
         }
 
         if tick_due {
+            // Free what the audio thread retired since the last tick.
+            effects.session().reclaim();
             effects.expire_message(SAVE_MESSAGE_TTL);
             let dt = now.saturating_sub(last_tick).as_secs_f32().min(0.05);
             fluid.tick(dt, &telemetry);
