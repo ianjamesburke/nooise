@@ -1335,23 +1335,24 @@ pub(crate) static PROGRESSIONS: [Progression; 38] = [
         ],
         bass: [45, 47, 45, 47, 48, 50, 45, 43],
     },
-    // F major harvest: the maj7 / m7 chords of the vi-ii-IV family drift
-    // down a third at a time, and a suspended C hangs before the F returns.
+    // F major harvest: an open Fadd9 and Bbadd9 lead in, then the maj7 / m7
+    // chords of the vi-ii-IV family drift down a third at a time, and a
+    // suspended C hangs before the F returns.
     Progression {
         song_value: 20,
         mood: "Harvest",
         home_mode: HomeMode::Major,
         chords: [
+            chord("Fadd9", [5, 0, 1, 6, 0, 0, 0, 0]),
+            chord("Bbadd9", [1, -1, 1, 6, 0, 0, 1, 1]),
             chord("Fmaj7", [5, 0, 1, 5, 0, 0, 1, 0]),
             chord("Am7", [0, 0, -1, 4, 0, 0, 1, 0]),
             chord("Dm9", [3, 0, -1, 4, 6, 0, 0, 0]),
             chord("Bbmaj7", [1, -1, 1, 5, 0, 0, 1, 1]),
             chord("Gm7", [6, 0, -1, 4, 0, 0, 1, 0]),
             chord("C7sus", [2, 0, 3, 4, 0, 0, 0, 0]),
-            chord("Fadd9", [5, 0, 1, 6, 0, 0, 0, 0]),
-            chord("Bbadd9", [1, -1, 1, 6, 0, 0, 1, 1]),
         ],
-        bass: [41, 45, 50, 46, 43, 48, 41, 46],
+        bass: [41, 46, 41, 45, 50, 46, 43, 48],
     },
     // G minor ember: the minor chords fall through Eb and Cm to a suspended
     // D, then an Fadd9 leans into a borrowed D major (its F#) before the
