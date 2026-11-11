@@ -2962,11 +2962,18 @@ mod push_tests {
 
     const RATE: f32 = 8000.0;
 
-    /// Song 1's shape at a quick tempo: A minor Drift, one chord per 4 bars.
+    /// Song 1's shape at a quick tempo: A minor Drift, one chord per 4 bars,
+    /// with pushes quantized to the bar so landings are easy to place.
     fn engine() -> (LiveSession, FluidEngine, EffectExecutor) {
+        engine_quantized(PushQuantize::OneBar)
+    }
+
+    fn engine_quantized(quantize: PushQuantize) -> (LiveSession, FluidEngine, EffectExecutor) {
         let mut song = SongState::default();
         song.controls.master.bpm = 120.0;
-        engine_for(&song)
+        let (session, engine, effects) = engine_for(&song);
+        session.update(|s| s.push.quantize = quantize);
+        (session, engine, effects)
     }
 
     fn engine_for(song: &SongState) -> (LiveSession, FluidEngine, EffectExecutor) {
@@ -3023,7 +3030,12 @@ mod push_tests {
         let before = engine.tempo.bpm / (60.0 * f64::from(RATE));
         play_until_beat(engine, beat - 2.0 * before);
         let notes = engine.pad.last_chord_notes;
+        let limit = engine.current_sample + 4 * RATE as u64;
         while engine.pad.last_chord_notes == notes {
+            assert!(
+                engine.current_sample < limit,
+                "no chord change near beat {beat}"
+            );
             engine.next_stereo();
         }
         let mut incoming = [0.0; 4];
@@ -3098,6 +3110,77 @@ mod push_tests {
         play_until_beat(&mut engine, 48.5);
         push(&mut effects, HarmonyAction::Undo);
         close(&profile_change(&mut engine, 52.0), "an undo");
+    }
+
+    /// The sample a move lands on under each setting: off on the very next
+    /// sample, a grid on the first sample at or past its next line.
+    #[test]
+    fn each_quantize_setting_lands_on_its_own_sample() {
+        for (quantize, line) in [
+            (PushQuantize::Off, None),
+            (PushQuantize::OneBar, Some(8.0)),
+            (PushQuantize::TwoBars, Some(8.0)),
+            (PushQuantize::FourBars, Some(16.0)),
+        ] {
+            let (session, mut engine, mut effects) = engine_quantized(quantize);
+            play_until_beat(&mut engine, 5.0);
+            push(&mut effects, HarmonyAction::Move(HarmonyMove::Relative));
+            let pressed = engine.current_sample;
+            while session.load().push.held.is_none() {
+                engine.next_stereo();
+                assert!(engine.current_sample < pressed + 20 * RATE as u64);
+            }
+            let step = engine.tempo.bpm / (60.0 * f64::from(RATE));
+            match line {
+                None => assert_eq!(engine.current_sample, pressed + 1, "off lands at once"),
+                Some(line) => {
+                    // The landing sample's beat is the first at or past the line.
+                    let landed = engine.tempo.beat;
+                    assert!(
+                        landed >= line - GRID_BEAT_EPSILON - step,
+                        "{quantize:?} early"
+                    );
+                    assert!(landed < line + 2.0 * step, "{quantize:?} late at {landed}");
+                }
+            }
+        }
+    }
+
+    /// Changing the setting re-times a waiting move from now.
+    #[test]
+    fn changing_the_setting_re_times_a_waiting_move() {
+        let (session, mut engine, mut effects) = engine_quantized(PushQuantize::FourBars);
+        play_until_beat(&mut engine, 1.0);
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::Relative));
+        effects
+            .set_harmony_quantize(PushQuantize::OneBar, 0.0)
+            .unwrap();
+        play_until_beat(&mut engine, 4.01);
+        assert!(
+            session.load().push.held.is_some(),
+            "re-timed to the next bar"
+        );
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::Parallel));
+        effects
+            .set_harmony_quantize(PushQuantize::Off, 0.0)
+            .unwrap();
+        engine.next_stereo();
+        assert_eq!(session.load().push.held.unwrap().triad.name(0), "Cm");
+    }
+
+    /// Off still changes through the smooth authored path.
+    #[test]
+    fn an_unquantized_push_still_fades_in_over_the_attack() {
+        let (_, mut authored, _) = engine();
+        let reference = profile_change(&mut authored, 16.0);
+        let (_, mut engine, mut effects) = engine_quantized(PushQuantize::Off);
+        play_until_beat(&mut engine, 22.3);
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::Relative));
+        let now = engine.tempo.beat;
+        let profile = profile_change(&mut engine, now);
+        for (got, want) in profile.incoming.iter().zip(reference.incoming) {
+            assert!((got - want).abs() < 0.02, "{profile:?} vs {reference:?}");
+        }
     }
 
     #[test]

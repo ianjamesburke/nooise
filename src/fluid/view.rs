@@ -351,6 +351,8 @@ pub(crate) struct HarmonyView {
     pub(crate) queued: Option<(String, f64)>,
     /// What each `HARMONY_MOVES` key would produce from the current base.
     pub(crate) previews: [String; 8],
+    /// Where moves land; the header counts down only when quantized.
+    pub(crate) quantize: PushQuantize,
 }
 
 impl HarmonyView {
@@ -377,6 +379,7 @@ impl HarmonyView {
                     queued.land_beat,
                 )
             }),
+            quantize: push.quantize,
             previews: HARMONY_MOVES
                 .each_ref()
                 .map(|row| row.harmony_move.apply(base, key).name(shift)),
@@ -1645,6 +1648,7 @@ mod tests {
     fn harmony_header_and_overlay_fit_the_minimum_frame() {
         let mut session = session();
         let mut push = PushedHarmony::default();
+        push.set_quantize(PushQuantize::OneBar, 0.0);
         let key = HomeKey::of_progression(0);
         let am = Triad::new(9, TriadQuality::Minor);
         push.push(HarmonyMove::Relative, key, am, 0.5);
@@ -1677,7 +1681,7 @@ mod tests {
                     assert!(chords.contains("C␠→␠G␠in␠1␠bar␠␠PUSH"), "{frame}");
                 }
                 for expected in [
-                    "now␠C␠→␠G␠next␠bar",
+                    "now␠C␠→␠G␠␠␠quantize␠1␠bar",
                     "j␠step␠down␠F",
                     "l␠lift",
                     "a␠home",

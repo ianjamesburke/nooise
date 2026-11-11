@@ -240,6 +240,8 @@ impl LiveSession {
             next.module_topology_revision = current.module_topology_revision.wrapping_add(1);
             next.automation_revision = current.automation_revision.wrapping_add(1);
             next.chord_names = current.chord_names;
+            // Where pushes land is the player's preference, not the section's.
+            next.push.quantize = current.push.quantize;
             next.gestures = pending.snapshot.gestures.restored_at(now_seconds);
             // Section state replaces authored latches, but keys physically held
             // across the boundary remain under the performer's finger.

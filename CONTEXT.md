@@ -77,8 +77,8 @@
   chord on landing.
 - **Push the Harmony:** steering the harmony by single-voice moves from the
   chord sounding now (P, L, R, diatonic steps, fifths, home), never by naming
-  a chord. A **move** queues for the next bar and composes with one already
-  queued. The **pushed chord** is the triad a landed move sounds; it holds the
+  a chord. A **move** lands at once, or on the next 1, 2 or 4
+  bar line when **chord quantize** is set, composing with one already queued. The **pushed chord** is the triad a landed move sounds; it holds the
   progression on its slot until **release** hands back to the authored
   progression.
 - **Morph leg:** an outgoing song's hold followed by its crossing into the

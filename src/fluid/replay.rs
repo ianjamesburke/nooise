@@ -5972,6 +5972,13 @@ fn reduced_terminal_can_toggle_group_mute_and_start_then_release_beat_repeat() {
     assert_eq!(repeat.effect_count("GestureReleaseAll"), 1);
 }
 
+/// Replay with pushes quantized to the bar, as the design table describes.
+fn replay_bar(trace: &[TraceEvent], capabilities: TerminalCapabilities) -> ReplayResult {
+    replay_with(trace, capabilities, |harness| {
+        harness.with_session_edit(|s| s.push.quantize = PushQuantize::OneBar)
+    })
+}
+
 /// The queued push's destination as a letter name, and the beat it lands on.
 fn queued_harmony(result: &ReplayResult) -> Option<(String, f64)> {
     result.harmony_queued.map(|(target, bits)| {
@@ -5991,7 +5998,7 @@ fn queued_harmony(result: &ReplayResult) -> Option<(String, f64)> {
 #[test]
 fn c_pushes_one_move_per_key_and_returns_to_browsing() {
     let plain = |code| key(0, code, InputPhase::Press);
-    let opened = replay(
+    let opened = replay_bar(
         &[plain(FixtureKey::Character('c'))],
         TerminalCapabilities::full(),
     );
@@ -6006,7 +6013,7 @@ fn c_pushes_one_move_per_key_and_returns_to_browsing() {
         ('s', "F"),
         ('a', "Am"),
     ] {
-        let pushed = replay(
+        let pushed = replay_bar(
             &[
                 plain(FixtureKey::Character('c')),
                 plain(FixtureKey::Character(key_char)),
@@ -6025,7 +6032,7 @@ fn c_pushes_one_move_per_key_and_returns_to_browsing() {
     // `u` with nothing pushed and `g` with nothing to release are explicit
     // no-ops that still return to browsing.
     for key_char in ['u', 'g'] {
-        let inert = replay(
+        let inert = replay_bar(
             &[
                 plain(FixtureKey::Character('c')),
                 plain(FixtureKey::Character(key_char)),
@@ -6038,7 +6045,7 @@ fn c_pushes_one_move_per_key_and_returns_to_browsing() {
     }
     // A key outside the map is inert and keeps the one-shot open; Esc
     // leaves with nothing pushed.
-    let cancelled = replay(
+    let cancelled = replay_bar(
         &[
             plain(FixtureKey::Character('c')),
             plain(FixtureKey::Character('z')),
@@ -6061,7 +6068,7 @@ fn shift_c_latches_moves_compose_before_the_bar_and_undo_walks_back() {
         modified_key(0, FixtureKey::Character('C'), InputPhase::Press, 1),
         plain(FixtureKey::Character('C')),
     ] {
-        let two_lifts = replay(
+        let two_lifts = replay_bar(
             &[
                 latch.clone(),
                 plain(FixtureKey::Character('l')),
@@ -6072,7 +6079,7 @@ fn shift_c_latches_moves_compose_before_the_bar_and_undo_walks_back() {
         assert_eq!(two_lifts.final_owner(), Some("HARMONY"));
         // Two fifths up from A minor: E minor, then B, diminished in A minor.
         assert_eq!(queued_harmony(&two_lifts), Some(("Bdim".to_string(), 4.0)));
-        let undone = replay(
+        let undone = replay_bar(
             &[
                 latch.clone(),
                 plain(FixtureKey::Character('l')),
@@ -6082,7 +6089,7 @@ fn shift_c_latches_moves_compose_before_the_bar_and_undo_walks_back() {
             TerminalCapabilities::full(),
         );
         assert_eq!(queued_harmony(&undone), Some(("Em".to_string(), 4.0)));
-        let withdrawn = replay(
+        let withdrawn = replay_bar(
             &[
                 latch.clone(),
                 plain(FixtureKey::Character('l')),
@@ -6103,7 +6110,7 @@ fn shift_c_latches_moves_compose_before_the_bar_and_undo_walks_back() {
 fn a_push_lands_on_the_bar_and_g_releases_it_on_the_next() {
     let plain = |after_ms, code| key(after_ms, code, InputPhase::Press);
     let latch = modified_key(0, FixtureKey::Character('C'), InputPhase::Press, 1);
-    let before_bar = replay(
+    let before_bar = replay_bar(
         &[
             latch.clone(),
             plain(0, FixtureKey::Character('f')),
@@ -6115,7 +6122,7 @@ fn a_push_lands_on_the_bar_and_g_releases_it_on_the_next() {
         before_bar.harmony_held, None,
         "nothing lands before the bar"
     );
-    let landed = replay(
+    let landed = replay_bar(
         &[
             latch.clone(),
             plain(0, FixtureKey::Character('f')),
@@ -6130,7 +6137,7 @@ fn a_push_lands_on_the_bar_and_g_releases_it_on_the_next() {
     assert!(frame.contains("C  PUSH"), "{frame}");
     assert!(frame.contains("Push the Harmony"), "{frame}");
 
-    let released = replay(
+    let released = replay_bar(
         &[
             latch,
             plain(0, FixtureKey::Character('f')),
@@ -6165,7 +6172,7 @@ fn control_chords_reach_the_harmony_mode() {
 /// pushing and leaving never release it, and its own key-up still does.
 #[test]
 fn harmony_mode_preserves_physical_holds() {
-    let result = replay(
+    let result = replay_bar(
         &[
             key(0, FixtureKey::Character('w'), InputPhase::Press),
             key(50, FixtureKey::Character('c'), InputPhase::Press),
@@ -6178,7 +6185,7 @@ fn harmony_mode_preserves_physical_holds() {
     assert_eq!(result.effect_count("GestureReleaseAll"), 0);
     assert_eq!(result.effect_count("GestureRelease(Submerge)"), 1);
     assert_eq!(queued_harmony(&result), Some(("Em".to_string(), 4.0)));
-    let latched = replay(
+    let latched = replay_bar(
         &[
             key(0, FixtureKey::Character('w'), InputPhase::Press),
             modified_key(50, FixtureKey::Character('C'), InputPhase::Press, 1),
@@ -6202,7 +6209,55 @@ fn the_palette_pushes_the_harmony() {
             .map(|character| key(0, FixtureKey::Character(character), InputPhase::Press)),
     );
     trace.push(key(0, FixtureKey::Enter, InputPhase::Press));
-    let result = replay(&trace, TerminalCapabilities::full());
+    let result = replay_bar(&trace, TerminalCapabilities::full());
     assert_eq!(result.final_owner(), Some("BROWSE"));
     assert_eq!(queued_harmony(&result), Some(("Em".to_string(), 4.0)));
+}
+
+/// Unquantized (the default) a push lands at once: the next production tick
+/// already sounds it, with no countdown in the header.
+#[test]
+fn by_default_a_push_lands_at_once() {
+    let result = replay(
+        &[
+            key(0, FixtureKey::Character('c'), InputPhase::Press),
+            key(0, FixtureKey::Character('f'), InputPhase::Press),
+            TraceEvent::Tick { after_ms: 20 },
+        ],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(
+        result.harmony_held.map(|held| held.triad.name(0)),
+        Some("C".to_string())
+    );
+    assert_eq!(result.harmony_queued, None);
+    // The last frame drew before the tick landed it: the queued move shows
+    // with no countdown.
+    let frame = &result.frames.last().unwrap().text;
+    assert!(
+        frame.contains("Am7add11 → C ") && !frame.contains(" bar"),
+        "{frame}"
+    );
+}
+
+/// `/harmony quantize 2` (the alias spelling) sets two-bar landings from
+/// the palette, and the overlay shows the setting.
+#[test]
+fn the_palette_sets_the_quantize_and_the_overlay_shows_it() {
+    let mut trace = vec![key(0, FixtureKey::Character('/'), InputPhase::Press)];
+    trace.extend(
+        "harmony quantize 2"
+            .chars()
+            .map(|character| key(0, FixtureKey::Character(character), InputPhase::Press)),
+    );
+    trace.extend([
+        key(0, FixtureKey::Enter, InputPhase::Press),
+        modified_key(0, FixtureKey::Character('C'), InputPhase::Press, 1),
+        key(0, FixtureKey::Character('l'), InputPhase::Press),
+    ]);
+    let result = replay(&trace, TerminalCapabilities::full());
+    assert_eq!(queued_harmony(&result), Some(("Em".to_string(), 8.0)));
+    let frame = &result.frames.last().unwrap().text;
+    assert!(frame.contains("quantize 2 bars"), "{frame}");
+    assert!(frame.contains("Em in 2 bars"), "{frame}");
 }

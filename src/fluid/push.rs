@@ -37,6 +37,50 @@ pub(crate) struct QueuedPush {
     pub(crate) land_beat: f64,
 }
 
+/// Where moves land: at once (`Off`, the default, for playing chords live)
+/// or on the next 1, 2 or 4 bar line. A play-style preference of the player,
+/// not part of the song: live-only, never in a song code.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum PushQuantize {
+    #[default]
+    Off,
+    OneBar,
+    TwoBars,
+    FourBars,
+}
+
+impl PushQuantize {
+    pub(crate) const fn bars(self) -> Option<u32> {
+        match self {
+            Self::Off => None,
+            Self::OneBar => Some(1),
+            Self::TwoBars => Some(2),
+            Self::FourBars => Some(4),
+        }
+    }
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::OneBar => "1 bar",
+            Self::TwoBars => "2 bars",
+            Self::FourBars => "4 bars",
+        }
+    }
+
+    /// The beat a move made at `beat` lands on: `beat` itself when off, else
+    /// the next line of this many bars strictly after it.
+    pub(crate) fn landing(self, beat: f64) -> f64 {
+        match self.bars() {
+            None => beat,
+            Some(bars) => {
+                let grid = f64::from(bars) * 4.0;
+                (beat / grid).floor() * grid + grid
+            }
+        }
+    }
+}
+
 /// What the harmony was before one move: a pushed triad, or the progression.
 type UndoEntry = Option<Triad>;
 
@@ -67,6 +111,8 @@ impl UndoHistory {
 pub(crate) struct PushedHarmony {
     pub(crate) held: Option<HeldChord>,
     pub(crate) queued: Option<QueuedPush>,
+    /// Live-only, like the undo history.
+    pub(crate) quantize: PushQuantize,
     undo: UndoHistory,
 }
 
@@ -98,6 +144,7 @@ impl PushedHarmony {
                 target,
                 land_beat: 0.0,
             }),
+            quantize: PushQuantize::default(),
             undo: UndoHistory::default(),
         }
     }
@@ -129,12 +176,13 @@ impl PushedHarmony {
     fn queue(&mut self, target: PushTarget, beat: f64) {
         let land_beat = self
             .queued
-            .map_or_else(|| next_bar_beat(beat), |queued| queued.land_beat);
+            .map_or_else(|| self.quantize.landing(beat), |queued| queued.land_beat);
         self.queued = Some(QueuedPush { target, land_beat });
     }
 
-    /// Queue `harmony_move` from the current base for the next bar. A second
-    /// move before that bar composes from the queued chord and keeps its bar.
+    /// Queue `harmony_move` from the current base, landing where `quantize`
+    /// says. A second move before it lands composes from the queued chord and
+    /// keeps its landing.
     pub(crate) fn push(
         &mut self,
         harmony_move: HarmonyMove,
@@ -148,7 +196,7 @@ impl PushedHarmony {
         PushOutcome::Queued(PushTarget::Chord(target))
     }
 
-    /// Queue the hand-back to the authored progression for the next bar.
+    /// Queue the hand-back to the authored progression.
     pub(crate) fn release(&mut self, beat: f64) -> PushOutcome {
         if self.heading().is_none() {
             return PushOutcome::Nothing;
@@ -159,7 +207,7 @@ impl PushedHarmony {
     }
 
     /// Walk back one move. Returning to where the harmony already sounds
-    /// withdraws the queue; anywhere else queues that harmony for the bar.
+    /// withdraws the queue; anywhere else queues that harmony.
     pub(crate) fn undo(&mut self, beat: f64) -> PushOutcome {
         let Some(previous) = self.undo.pop() else {
             return PushOutcome::Nothing;
@@ -191,6 +239,16 @@ impl PushedHarmony {
             }),
             PushTarget::Release => None,
         };
+    }
+
+    /// Change where moves land. A waiting move is re-timed to the new
+    /// setting from `beat`: off lands it at once, a grid moves it to that
+    /// grid's next line.
+    pub(crate) fn set_quantize(&mut self, quantize: PushQuantize, beat: f64) {
+        self.quantize = quantize;
+        if let Some(queued) = &mut self.queued {
+            queued.land_beat = quantize.landing(beat);
+        }
     }
 
     /// A restart begins at bar one, so a waiting move lands there.
@@ -235,13 +293,21 @@ mod tests {
         Triad::new(9, TriadQuality::Minor)
     }
 
+    /// The bar-quantized state the design table's examples use.
+    fn bar_push() -> PushedHarmony {
+        PushedHarmony {
+            quantize: PushQuantize::OneBar,
+            ..PushedHarmony::default()
+        }
+    }
+
     fn target(push: &PushedHarmony) -> Option<PushTarget> {
         push.queued.map(|queued| queued.target)
     }
 
     #[test]
     fn a_move_queues_for_the_next_bar_and_a_second_composes_from_it() {
-        let mut push = PushedHarmony::default();
+        let mut push = bar_push();
         push.push(HarmonyMove::FifthUp, KEY, am(), 5.5);
         assert_eq!(push.queued.unwrap().land_beat, 8.0);
         push.push(HarmonyMove::FifthUp, KEY, am(), 7.0);
@@ -261,7 +327,7 @@ mod tests {
 
     #[test]
     fn landing_voices_from_the_sounding_notes_and_keeps_the_held_slot() {
-        let mut push = PushedHarmony::default();
+        let mut push = bar_push();
         push.push(HarmonyMove::Relative, KEY, am(), 0.5);
         push.land([45, 48, 52, 57], 3);
         let held = push.held.unwrap();
@@ -276,7 +342,7 @@ mod tests {
 
     #[test]
     fn undo_walks_back_through_queued_and_landed_moves() {
-        let mut push = PushedHarmony::default();
+        let mut push = bar_push();
         push.push(HarmonyMove::Relative, KEY, am(), 0.5);
         assert_eq!(push.undo(1.0), PushOutcome::Cancelled);
         assert_eq!(push.queued, None);
@@ -301,7 +367,7 @@ mod tests {
 
     #[test]
     fn undo_history_is_bounded() {
-        let mut push = PushedHarmony::default();
+        let mut push = bar_push();
         for _ in 0..PUSH_UNDO_DEPTH + 5 {
             push.push(HarmonyMove::FifthUp, KEY, am(), 0.0);
         }
@@ -314,7 +380,7 @@ mod tests {
 
     #[test]
     fn release_hands_back_only_when_pushed() {
-        let mut push = PushedHarmony::default();
+        let mut push = bar_push();
         assert_eq!(push.release(1.0), PushOutcome::Nothing);
         push.push(HarmonyMove::Home, KEY, am(), 1.0);
         assert_eq!(push.release(1.0), PushOutcome::Queued(PushTarget::Release));
@@ -326,8 +392,41 @@ mod tests {
     }
 
     #[test]
-    fn a_restart_lands_a_waiting_move_on_bar_one() {
+    fn off_lands_at_once_and_each_grid_lands_on_its_next_line() {
+        assert_eq!(PushQuantize::default(), PushQuantize::Off);
+        for (quantize, beat, expected) in [
+            (PushQuantize::Off, 5.25, 5.25),
+            (PushQuantize::OneBar, 5.25, 8.0),
+            (PushQuantize::OneBar, 8.0, 12.0),
+            (PushQuantize::TwoBars, 5.25, 8.0),
+            (PushQuantize::TwoBars, 8.5, 16.0),
+            (PushQuantize::FourBars, 5.25, 16.0),
+            (PushQuantize::FourBars, 16.0, 32.0),
+        ] {
+            assert_eq!(quantize.landing(beat), expected, "{quantize:?} at {beat}");
+        }
         let mut push = PushedHarmony::default();
+        push.push(HarmonyMove::Relative, KEY, am(), 5.25);
+        assert!(push.is_due(5.25), "off lands on the next sample");
+    }
+
+    #[test]
+    fn changing_the_setting_re_times_a_waiting_move() {
+        let mut push = bar_push();
+        push.push(HarmonyMove::Relative, KEY, am(), 5.0);
+        push.set_quantize(PushQuantize::FourBars, 6.0);
+        assert_eq!(push.queued.unwrap().land_beat, 16.0);
+        push.set_quantize(PushQuantize::Off, 7.0);
+        assert!(push.is_due(7.0));
+        assert_eq!(
+            target(&push),
+            Some(PushTarget::Chord(Triad::new(0, TriadQuality::Major)))
+        );
+    }
+
+    #[test]
+    fn a_restart_lands_a_waiting_move_on_bar_one() {
+        let mut push = bar_push();
         push.push(HarmonyMove::Home, KEY, am(), 30.0);
         assert_eq!(push.restarted().queued.unwrap().land_beat, 0.0);
     }

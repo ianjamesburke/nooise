@@ -1203,8 +1203,9 @@ impl EffectExecutor {
         })
     }
 
-    /// One Push the Harmony key: queue a move for the next bar (composing
-    /// with one already queued), undo, or hand back to the progression. Like
+    /// One Push the Harmony key: queue a move where the quantize setting
+    /// lands it (composing with one already queued), undo, or hand back to
+    /// the progression. Like
     /// the vamp it plays over the song rather than editing it, so auto keeps
     /// running and the MRU is untouched.
     pub(crate) fn push_harmony(
@@ -1216,6 +1217,7 @@ impl EffectExecutor {
         let phrase_start = self.session.audio_phrase_start();
         let mut outcome = PushOutcome::Nothing;
         let mut shift = 0;
+        let mut quantize = PushQuantize::Off;
         let snapshot = self.session.update(|snapshot| {
             let pad = &snapshot.controls.pad;
             let progression = progression_index(pad.progression);
@@ -1225,16 +1227,21 @@ impl EffectExecutor {
             };
             let authored = authored_triad(pad, progression, slot);
             shift = MasterKey::from_control(snapshot.controls.master.key).shift(progression);
+            quantize = snapshot.push.quantize;
             outcome =
                 snapshot
                     .push
                     .act(action, HomeKey::of_progression(progression), authored, beat);
         });
+        let when = match quantize.bars() {
+            None => String::new(),
+            Some(_) => format!(" · quantize {}", quantize.label()),
+        };
         self.show_message(match outcome {
             PushOutcome::Queued(PushTarget::Chord(triad)) => {
-                format!("Harmony → {} next bar", triad.name(shift))
+                format!("Harmony → {}{when}", triad.name(shift))
             }
-            PushOutcome::Queued(PushTarget::Release) => "Progression returns next bar".to_string(),
+            PushOutcome::Queued(PushTarget::Release) => format!("Progression returns{when}"),
             PushOutcome::Cancelled => "Push cancelled".to_string(),
             PushOutcome::Nothing => match action {
                 HarmonyAction::Undo => "Nothing to undo".to_string(),
@@ -1246,6 +1253,23 @@ impl EffectExecutor {
             _ => EffectAcknowledgement::Published {
                 generation: snapshot.generation,
             },
+        })
+    }
+
+    /// Set where Push the Harmony moves land. A live play-style choice: it
+    /// re-times a waiting move, never exits auto, and is not saved in songs.
+    pub(crate) fn set_harmony_quantize(
+        &mut self,
+        quantize: PushQuantize,
+        beat: f64,
+    ) -> Result<EffectAcknowledgement, EffectFailure> {
+        let beat = self.current_beat(beat);
+        let snapshot = self
+            .session
+            .update(|snapshot| snapshot.push.set_quantize(quantize, beat));
+        self.show_message(format!("Harmony quantize {}", quantize.label()));
+        Ok(EffectAcknowledgement::Published {
+            generation: snapshot.generation,
         })
     }
 
@@ -1647,6 +1671,9 @@ impl EffectExecutor {
             InteractionEffect::ToggleSectionQueue(index) => self.toggle_section_queue(index),
             InteractionEffect::PlanMute(tab) => self.plan_mute(tab, context.beat),
             InteractionEffect::Harmony(action) => self.push_harmony(action, context.beat),
+            InteractionEffect::SetHarmonyQuantize(quantize) => {
+                self.set_harmony_quantize(quantize, context.beat)
+            }
             InteractionEffect::ClearSequence(tab) => self.clear_sequence(tab),
             InteractionEffect::Save => self.execute_with_clipboard(LiveEffect::CopySong, clipboard),
             InteractionEffect::Quit => Ok(EffectAcknowledgement::QuitRequested),
@@ -1806,6 +1833,9 @@ impl EffectExecutor {
             InteractionEffect::ToggleSectionQueue(index) => self.toggle_section_queue(index),
             InteractionEffect::PlanMute(tab) => self.plan_mute(tab, context.beat),
             InteractionEffect::Harmony(action) => self.push_harmony(action, context.beat),
+            InteractionEffect::SetHarmonyQuantize(quantize) => {
+                self.set_harmony_quantize(quantize, context.beat)
+            }
             InteractionEffect::ClearSequence(tab) => self.clear_sequence(tab),
             InteractionEffect::ToggleTransport => {
                 self.toggle_transport();

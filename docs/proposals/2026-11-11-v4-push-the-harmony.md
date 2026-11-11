@@ -26,8 +26,9 @@ scores against each preference:
   diminished P/L/R neighbours exist so no key is a dead end, and every chord
   stays inside MIDI 40-79. `u` with nothing to undo and `g` with nothing pushed
   say so and change nothing.
-- **Rewards practice.** Moves chain before the bar (`l l`, `f d`), so speed
-  buys bigger moves per bar. Voice leading is deterministic: the same chain
+- **Rewards practice.** Unquantized (the default), every key is its own
+  change, so chords are played live. Quantized, moves chain before the line
+  (`l l`, `f d`), so speed buys bigger moves per line. Voice leading is deterministic: the same chain
   from the same chord always sounds the same, which is what lets it become
   muscle memory. Undo makes a wrong chain cheap to recover from.
 - **Eyes-closed, home row, each key always means the same thing.** All eight
@@ -59,10 +60,16 @@ latches it too. Ctrl+C still quits. Inside the mode only:
 | `u` | undo the last move (16 deep) | |
 | `g` | release: back to the authored progression | |
 
-Moves land on the next bar. A second move before that bar composes from the
-queued chord and keeps the same bar, so `l l` is two fifths up. The header
-shows the sounding chord, the queued chord and the bar countdown
-(`CHORDS  C → G in 1 bar  PUSH`). The overlay lists the eight moves with the
+Where a move lands is the chord quantize setting. It defaults to off: a move
+lands on the next sample, so chords can be played live, and each key is its
+own change. `/harmony quantize 1`, `2` or `4` (palette rows `Harmony quantize
+off/1 bar/2 bars/4 bars`) make moves wait for the next 1, 2 or 4 bar line;
+then a second move before that line composes from the queued chord and keeps
+the same line, so `l l` is two fifths up. Changing the setting re-times a
+waiting move from now (off lands it at once). The header shows the sounding
+chord and the queued one, with a bar countdown only when quantized
+(`CHORDS  C → G in 1 bar  PUSH`); the overlay's first line shows the setting
+(`now C → G   quantize 1 bar`). The overlay lists the eight moves with the
 chord each would produce from the current base, which is the eyes-open
 learning aid. Every move, undo and release is also a `/` operation (`/harmony
 lift`, alias `/push l`, and so on).
@@ -109,8 +116,7 @@ Physical holds keep running through the mode, as with the section leaders.
   compares the envelopes. The first mock slurred pushes in (the incoming layer
   started at the level the pad held), which put the new pitch in at about
   two thirds of full level at once: the jolt Ian heard.
-- Release (`g`, or undo back past the first move) lands on the next bar like a
-  move: the held slot's authored chord sounds again and the progression moves
+- Release (`g`, or undo back past the first move) lands like a move: the held slot's authored chord sounds again and the progression moves
   on at its next chord boundary. This is the clean way back; the Vamp (`a` in
   Browsing) stays independent.
 - Without an audio clock (replay, tests) the production tick lands the queue,
@@ -121,7 +127,16 @@ Physical holds keep running through the mode, as with the section leaders.
 Song record 16 (version 1) carries the held chord (slot, root, quality, four
 notes) and a queued target (chord or release): at most 12 bytes. A queued move
 lands on the loaded song's first bar; a restart lands it on bar one. Undo
-history is live-only. Malformed, inconsistent or trailing records are refused
+history is live-only.
+
+The quantize setting is not saved in song codes. Commandment 4 says a code
+saves the musical state a person chose. Quantize produces no sound on its own:
+it only decides when the player's *next* key lands, the way key repeat or a
+display choice would. It is a play-style preference of the player, not part
+of the song, so sharing a code must not change how someone else's keys
+respond. What it already affected is saved: the pushed chord and any queued
+move. It lives in the live session (`PushedHarmony::quantize`), survives
+section landings, resets to off on launch, and needs no record or migration. Malformed, inconsistent or trailing records are refused
 with `SongCodeError::InvalidPushHarmony`. A section landing takes the
 destination's own push state.
 

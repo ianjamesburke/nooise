@@ -69,16 +69,20 @@ key's tonic. `u` undoes the last move (16 deep) and `g` hands the harmony back
 to the authored progression. Outside the mode every key keeps its browsing
 meaning. Each action is also a `/` operation (`/harmony lift`, `/push l`).
 
-A move lands on the next bar. A second move before that bar composes from the
-queued chord and keeps the bar, so `l l` is two fifths up. The pad voices the
+By default a move lands at once, so chords can be played live.
+`/harmony quantize 1`, `2` or `4` makes moves wait for the next 1, 2 or 4 bar
+line, and `/harmony quantize off` returns to playing live; the setting is
+shown in the overlay, is not saved with songs, and re-times a waiting move
+when changed. While quantized, a second move before the line composes from
+the queued chord and keeps the line, so `l l` is two fifths up. The pad voices the
 new triad from the notes it is sounding, each voice moving to a nearby chord
 tone, and changes exactly as an authored chord does: the new chord fades in
 over the pad Attack while the old one rings out over Release. The Bass
 follows the new root in its own register.
 While pushed, the progression is held on the sounding slot like a Vamp; `g`
-(or undoing past the first move) brings the authored chord back on the next
-bar and the progression moves on at its next chord boundary. The header reads
-`CHORDS  C → G in 1 bar  PUSH`, and the overlay lists the eight moves with the
+(or undoing past the first move) brings the authored chord back the same way
+and the progression moves on at its next chord boundary. The header reads
+`CHORDS  C → G in 1 bar  PUSH` (the countdown only when quantized), and the overlay lists the eight moves with the
 chord each would produce. A saved song keeps the pushed chord and any queued
 move, which lands on the loaded song's first bar; undo history is not saved.
 Opening, pushing and leaving keep physical holds running, and Ctrl+C still
@@ -386,13 +390,13 @@ Lead play retains its own `i` entry and existing bindings.
 12. Edit the set file to start a line with `A`: relaunch shows the refusal at
    launch and the song plays.
 
-13. On song 1 (A minor), press `c` then `f`: the header reads
-   `Am7add11 → C in 1 bar` (the authored name, then the pushed triad), and on
-   the next bar the pad slides into C with the least voice movement and the
-   Bass steps up a minor third. Press Shift+`C`, then `l` `l` before the bar: it lands on B
-   diminished. `u` walks back to E minor on the next bar; `g` returns the
-   authored chord on the bar after. Hold `w` through all of it: Submerge stays
-   held. Save with a chord pushed, reload: it sounds at once.
+13. On song 1 (A minor), press `c` then `f`: C fades in at once over the pad
+   Attack, exactly like the progression's own chord changes, with the least
+   voice movement, and the Bass steps up a minor third. `/harmony quantize 1`,
+   then Shift+`C` and `l` `l` before the bar: the header counts down and it
+   lands on B diminished. `u` walks back to E minor on the next bar; `g`
+   returns the authored chord on the bar after. Hold `w` through all of it:
+   Submerge stays held. Save with a chord pushed, reload: it sounds at once.
 
 Acceptance requires rendered-audio checks as well as input replay and footer
 checks. The minimum supported frame is 46x11 — the two-row footer costs the

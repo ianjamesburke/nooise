@@ -1562,6 +1562,8 @@ pub(crate) enum InteractionEffect {
     /// One Push the Harmony key. The kernel cannot see the harmony, so the
     /// executor resolves the move against the chord sounding now.
     Harmony(super::HarmonyAction),
+    /// Set where Push the Harmony moves land, re-timing a waiting move.
+    SetHarmonyQuantize(super::PushQuantize),
     /// Reset the active sequence steps on `Tab` (Pads to root, notes to rest).
     ClearSequence(Tab),
     ToggleTransport,
@@ -2663,6 +2665,7 @@ fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionE
         Operation::ToggleBeatRepeat => InteractionEffect::ToggleBeatRepeat,
         Operation::Section(action) => InteractionEffect::Section(action),
         Operation::Harmony(action) => InteractionEffect::Harmony(action),
+        Operation::HarmonyQuantize(quantize) => InteractionEffect::SetHarmonyQuantize(quantize),
         Operation::ClearSequence => {
             InteractionEffect::ClearSequence(palette.planned_tab.unwrap_or(Tab::Chords))
         }

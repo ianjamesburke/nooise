@@ -22,6 +22,7 @@ pub(crate) enum Operation {
     ClearSequence,
     Section(SectionAction),
     Harmony(HarmonyAction),
+    HarmonyQuantize(PushQuantize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,7 +115,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 61] = [
+    pub(crate) const ALL: [Self; 65] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -176,6 +177,10 @@ impl Operation {
         Self::Harmony(HarmonyAction::Move(HarmonyMove::Home)),
         Self::Harmony(HarmonyAction::Undo),
         Self::Harmony(HarmonyAction::Release),
+        Self::HarmonyQuantize(PushQuantize::Off),
+        Self::HarmonyQuantize(PushQuantize::OneBar),
+        Self::HarmonyQuantize(PushQuantize::TwoBars),
+        Self::HarmonyQuantize(PushQuantize::FourBars),
     ];
 
     pub(crate) fn spec(self) -> OperationSpec {
@@ -339,11 +344,38 @@ impl Operation {
                     HarmonyAction::Release => &["push g", "push release", "back to progression"],
                 },
                 description: match action {
-                    HarmonyAction::Move(_) => {
-                        "push the harmony at the next bar (c then key; Shift+C stays)"
-                    }
+                    HarmonyAction::Move(_) => "push the harmony (c then key; Shift+C stays)",
                     HarmonyAction::Undo => "walk back the last harmony push",
-                    HarmonyAction::Release => "return to the authored progression at the next bar",
+                    HarmonyAction::Release => "return to the authored progression",
+                },
+            },
+            Self::HarmonyQuantize(quantize) => OperationSpec {
+                operation: self,
+                label: match quantize {
+                    PushQuantize::Off => "Harmony quantize off",
+                    PushQuantize::OneBar => "Harmony quantize 1 bar",
+                    PushQuantize::TwoBars => "Harmony quantize 2 bars",
+                    PushQuantize::FourBars => "Harmony quantize 4 bars",
+                },
+                aliases: match quantize {
+                    PushQuantize::Off => &[
+                        "harmony quantize 0",
+                        "push quantize off",
+                        "chord quantize off",
+                    ],
+                    PushQuantize::OneBar => {
+                        &["harmony quantize 1", "push quantize 1", "chord quantize 1"]
+                    }
+                    PushQuantize::TwoBars => {
+                        &["harmony quantize 2", "push quantize 2", "chord quantize 2"]
+                    }
+                    PushQuantize::FourBars => {
+                        &["harmony quantize 4", "push quantize 4", "chord quantize 4"]
+                    }
+                },
+                description: match quantize {
+                    PushQuantize::Off => "harmony pushes land at once",
+                    _ => "harmony pushes wait for the next bar line of this length",
                 },
             },
             Self::ClearSequence => OperationSpec {
@@ -378,6 +410,7 @@ impl Operation {
             | Self::ClearSequence
             | Self::Section(_)
             | Self::Harmony(_)
+            | Self::HarmonyQuantize(_)
             | Self::ToggleVamp
             | Self::ToggleKickBass
             | Self::ToggleBeatRepeat
