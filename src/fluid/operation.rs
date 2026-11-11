@@ -281,7 +281,7 @@ impl Operation {
                 operation: self,
                 label: "Reset downbeat",
                 aliases: &["downbeat", "beat one", "bar one", "realign beat"],
-                description: "make this moment beat one of the bar; tempo and chord stay",
+                description: "make the next beat beat one of the bar; tempo and chord stay",
             },
             Self::State(action) => OperationSpec {
                 operation: self,

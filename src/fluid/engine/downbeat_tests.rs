@@ -142,6 +142,23 @@ impl Player {
         self.engine.telemetry.chord_pulse.load(Ordering::Acquire)
     }
 
+    fn per_sample(&self) -> f64 {
+        self.engine.tempo.bpm / (60.0 * f64::from(RATE))
+    }
+
+    /// Play until the requested reset lands; returns the old-clock beat the
+    /// landing sample started on.
+    fn cross_line(&mut self) -> f64 {
+        loop {
+            let top = self.engine.tempo.beat;
+            self.step();
+            if self.engine.tempo.beat < top {
+                return top;
+            }
+            assert!(top < 64.0, "the reset never landed");
+        }
+    }
+
     /// Beats the Kick fires on while playing `beats` more.
     fn kick_beats(&mut self, beats: f64) -> Vec<f64> {
         let end = self.engine.tempo.beat + beats;
@@ -158,29 +175,54 @@ impl Player {
 }
 
 #[test]
-fn d_makes_the_next_sample_beat_one_of_bar_one_and_kick_restarts_at_step_one() {
+fn d_waits_for_the_next_beat_line_and_makes_it_beat_one() {
     let mut player = Player::new(&song(), Vec::new());
     player.play_until(5.6);
     let tempo = player.engine.tempo.bpm;
     let slot = player.engine.pad.cursor.slot();
 
     player.downbeat();
+    // Until the line the old grid plays on: steps 1 and 4 of the 2-beat
+    // cycle that began on beat 4 have both passed, so nothing fires.
+    assert!(player.kick_beats(0.35).is_empty());
     let kicks = player.kick_pulses();
-    let (beat, _) = player.step();
+    let landed_from = player.cross_line();
 
     assert!(
-        beat.abs() < 1e-9,
-        "the press sample is beat zero, got {beat}"
+        (0.0..player.per_sample()).contains(&(landed_from - 6.0)),
+        "the reset lands on beat line 6, got {landed_from}"
     );
-    assert_eq!(player.kick_pulses(), kicks + 1, "step 1 hits on the press");
+    assert_eq!(player.kick_pulses(), kicks + 1, "step 1 hits on the line");
     assert_eq!(player.engine.tempo.bpm, tempo, "tempo is unchanged");
     assert_eq!(player.engine.pad.cursor.slot(), slot, "no chord is skipped");
     // Steps 1 and 4 of an 8-step 0.25-beat lane: beats 0 and 0.75 of every
-    // two-beat cycle on the new grid. Without the restart the next hit would
-    // have come 0.4 beats after the press, on the old step 7.
+    // two-beat cycle on the new grid.
     assert_eq!(player.kick_beats(3.9), vec![0.75, 2.0, 2.75]);
     player.play_until(4.0);
     assert_eq!((player.engine.tempo.beat / 4.0).floor(), 1.0, "bar two");
+}
+
+#[test]
+fn the_beat_phase_never_moves_only_the_bar_rotates() {
+    let mut player = Player::new(&song(), Vec::new());
+    let mut twin = Player::new(&song(), Vec::new());
+    player.play_until(5.6);
+    twin.play_until(5.6);
+    player.downbeat();
+    while player.engine.tempo.beat > 1.0 {
+        player.step();
+        twin.step();
+    }
+    let per_sample = player.per_sample();
+    for _ in 0..(RATE as usize * 2) {
+        player.step();
+        twin.step();
+        let rotation = twin.engine.tempo.beat - player.engine.tempo.beat;
+        assert!(
+            (rotation - 6.0).abs() < per_sample,
+            "rotated by {rotation} beats, not a whole number"
+        );
+    }
 }
 
 #[test]
@@ -191,7 +233,7 @@ fn the_sounding_chord_restarts_its_count_without_being_struck_again() {
     let chords = player.chord_pulses();
 
     player.downbeat();
-    player.step();
+    player.cross_line();
 
     let span = player.engine.pad.cursor.chord_span();
     assert_eq!((span.start_beat, span.length_beats), (0.0, 4.0));
@@ -202,7 +244,7 @@ fn the_sounding_chord_restarts_its_count_without_being_struck_again() {
     assert_eq!(
         player.engine.pad.cursor.slot(),
         (slot + 1) % 4,
-        "the next chord lands one full chord after the press"
+        "the next chord lands one full chord after the line"
     );
     for follower in [
         &player.engine.bass.progression,
@@ -214,6 +256,27 @@ fn the_sounding_chord_restarts_its_count_without_being_struck_again() {
             assert_eq!(cursor.slot(), player.engine.pad.cursor.slot());
         }
     }
+}
+
+#[test]
+fn a_chord_due_on_the_line_arrives_on_beat_one() {
+    let mut player = Player::new(&song(), Vec::new());
+    player.play_until(7.6);
+    let slot = player.engine.pad.cursor.slot();
+    let chords = player.chord_pulses();
+
+    player.downbeat();
+    player.cross_line();
+    player.step();
+
+    assert_eq!(player.engine.pad.cursor.slot(), (slot + 1) % 4);
+    assert_eq!(
+        player.chord_pulses(),
+        chords + 1,
+        "struck once, on the line"
+    );
+    let span = player.engine.pad.cursor.chord_span();
+    assert_eq!((span.start_beat, span.length_beats), (0.0, 4.0));
 }
 
 #[test]
@@ -230,13 +293,18 @@ fn a_queued_state_lands_at_the_phrase_end_measured_from_the_new_downbeat() {
     assert_eq!(player.session.audio_phrase_end(), Some(16.0));
 
     player.downbeat();
-    player.step();
-    // The countdown is published at the top of each sample, so it shows the
-    // new grid from the sample after the press.
+    player.play_until(5.9);
+    assert_eq!(
+        player.session.audio_phrase_end(),
+        Some(16.0),
+        "until the line"
+    );
+    player.cross_line();
+    // The countdown is published at the top of each sample.
     player.step();
 
-    // The chord that began on beat 4 now begins on beat 0, so the three
-    // chords left in the phrase end 12 beats from the press.
+    // The chord that began on beat 4 now begins on the line, so the three
+    // chords left in the phrase end 12 beats after it.
     assert_eq!(player.session.audio_phrase_end(), Some(12.0));
     player.play_until(11.9);
     assert!(player.session.load().pending_state.is_some());
@@ -246,16 +314,21 @@ fn a_queued_state_lands_at_the_phrase_end_measured_from_the_new_downbeat() {
 }
 
 #[test]
-fn a_planned_mute_waits_for_the_next_bar_of_the_new_grid() {
+fn a_planned_mute_waits_for_the_first_new_bar_line_at_or_after_its_own() {
     let mut player = Player::new(&song(), Vec::new());
     player.play_until(5.6);
     player.tap(' ');
     player.tap('m');
-    assert!(player.session.load().planned.is_some());
+    let Some(PlannedAction::Mute { target_beat, .. }) = player.session.load().planned else {
+        panic!("planned");
+    };
+    assert_eq!(target_beat, 8.0);
 
     player.downbeat();
-    player.step();
+    player.cross_line();
 
+    // Old beat 8 is two beats after the line; the new grid's bar line at or
+    // after it is beat 4.
     let Some(PlannedAction::Mute { target_beat, .. }) = player.session.load().planned else {
         panic!("the planned mute survives the reset");
     };
@@ -272,18 +345,18 @@ fn a_latched_vamp_keeps_its_chord_without_a_restrike() {
     let mut player = Player::new(&song(), Vec::new());
     player.play_until(5.6);
     player.tap('a');
-    player.play_until(6.0);
+    player.play_until(5.8);
     let vamp = player.session.load().vamp.expect("vamp latched");
     let chords = player.chord_pulses();
 
     player.downbeat();
-    player.step();
+    player.cross_line();
 
     let rebased = player.session.load().vamp.expect("vamp still latched");
     assert_eq!(rebased.slot, vamp.slot);
     assert_eq!(rebased.start_beat, vamp.start_beat - 4.0);
     // A vamp re-voices its chord at each chord boundary; the first one on
-    // the new grid is a full chord after the press.
+    // the new grid is a full chord after the line.
     player.play_until(3.9);
     assert_eq!(
         player.chord_pulses(),
@@ -305,9 +378,8 @@ fn a_held_beat_repeat_keeps_looping_and_releases_on_the_new_grid() {
 
     player.downbeat();
     dry.downbeat();
-    // The clock reads the old grid until the first sample observes the press.
-    player.step();
-    dry.step();
+    player.cross_line();
+    dry.cross_line();
     let mut difference = 0.0f32;
     while player.engine.tempo.beat < 0.5 {
         let wet = player.step().1;
@@ -342,7 +414,7 @@ fn a_held_beat_repeat_keeps_looping_and_releases_on_the_new_grid() {
 
 #[test]
 fn the_reset_is_click_free() {
-    // Pads only: the press must not add a step larger than the music's own.
+    // Pads only: the line must not add a step larger than the music's own.
     let mut quiet = song();
     quiet.controls.kick.level = 0.0;
     let mut player = Player::new(&quiet, Vec::new());
@@ -356,11 +428,15 @@ fn the_reset_is_click_free() {
     }
     player.downbeat();
     let mut largest_after = 0.0f32;
-    for _ in 0..(RATE as usize / 10) {
+    let mut crossed = false;
+    for _ in 0..(RATE as usize) {
+        let top = player.engine.tempo.beat;
         let sample = player.step().1;
+        crossed |= player.engine.tempo.beat < top;
         largest_after = largest_after.max((sample.0 - previous.0).abs());
         previous = sample;
     }
+    assert!(crossed, "the line fell inside the measured second");
     assert!(largest_before > 0.0, "fixture must sound");
     assert!(largest_after > 0.0, "the chord rings on through the reset");
     assert!(
@@ -392,7 +468,7 @@ fn auto_keeps_its_progress_aligned_to_the_restarted_chord() {
     let chords = player.chord_pulses();
 
     player.downbeat();
-    player.step();
+    player.cross_line();
 
     let morph = player.morph.load();
     let morph = morph.as_ref().as_ref().expect("the reset keeps auto");
@@ -436,10 +512,11 @@ fn slash_downbeat_resets_through_the_palette() {
     }
     player.key(KeyCode::Enter, KeyModifiers::NONE, KeyEventKind::Press);
     assert_eq!(player.session.load().downbeat_reset, 1);
-    let (beat, _) = player.step();
-    assert!(beat.abs() < 1e-9);
     assert!(matches!(
         player.model.mode,
         super::super::interaction::InteractionMode::Browsing
     ));
+    let landed_from = player.cross_line();
+    assert!((landed_from - 6.0).abs() < player.per_sample());
+    assert_eq!(player.session.load().downbeat_applied, 1);
 }

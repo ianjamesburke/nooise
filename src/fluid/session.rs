@@ -62,9 +62,13 @@ pub(crate) struct LiveSessionSnapshot {
     pub(crate) transport: Transport,
     /// Counts explicit restarts, including stop/play between audio reads.
     pub(crate) transport_restart: u64,
-    /// Counts downbeat resets. Live-only: the audio engine re-anchors bar one
-    /// on the first sample that observes a change, without stopping.
+    /// Counts downbeat reset requests. Live-only: the audio engine makes the
+    /// next beat line after it observes a change beat one of bar one.
     pub(crate) downbeat_reset: u64,
+    /// Counts downbeat resets the audio engine has applied, each moving the
+    /// clock back by `downbeat_shift` whole beats. Live-only.
+    pub(crate) downbeat_applied: u64,
+    pub(crate) downbeat_shift: f64,
     /// How chords are written on screen. Live-only: a display choice, never
     /// read by the audio thread or written to a song code.
     pub(crate) chord_names: ChordNames,
@@ -113,6 +117,8 @@ impl LiveSessionSnapshot {
             transport: Transport::Playing,
             transport_restart: 0,
             downbeat_reset: 0,
+            downbeat_applied: 0,
+            downbeat_shift: 0.0,
             chord_names: ChordNames::default(),
             tonal_sequence: song
                 .tonal_sequence
@@ -148,6 +154,8 @@ impl LiveSessionSnapshot {
             transport: Transport::Playing,
             transport_restart: 0,
             downbeat_reset: 0,
+            downbeat_applied: 0,
+            downbeat_shift: 0.0,
             chord_names: ChordNames::default(),
         }
     }

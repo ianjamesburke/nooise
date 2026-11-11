@@ -7,7 +7,7 @@ Audio processing helpers owned by `../engine.rs`.
 ## Ownership
 
 - `gesture_audio.rs` owns the Master-bus gesture stage, parallel effect returns, and their bounded runtime storage.
-- `downbeat_tests.rs` drives `d` and `/downbeat` through the production input path into rendered audio. It covers the press sample, step-1 restart, the chord count, a queued state, planned mute, vamp, Beat Repeat, auto, a stopped clock, and clicks.
+- `downbeat_tests.rs` drives `d` and `/downbeat` through the production input path into rendered audio. It covers the wait for the next beat line, whole-beat rotation with no phase shift, the step-1 restart, the chord count (including a chord due on the line), a queued state, planned mute, vamp, Beat Repeat, auto, a stopped clock, and clicks.
 - `perf_probe.rs` is the ignored audio-thread cost probe: ordinary versus bar-crossing buffer time, steady CPU share, and heap traffic under UI edits.
 - `../engine.rs` owns voice/Master routing (gestures run after Master's slot chain, before the master bus), clock publication, and session reads.
 - `../gesture.rs` owns the gesture vocabulary and scalar envelopes; shared effect algorithms remain in `../../fx/`.
