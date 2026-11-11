@@ -1,80 +1,96 @@
-# v4 mock-up: Push the Harmony
+# v4: Push the Harmony and the v4 key map
 
-Status: playable mock-up on branch `temp-v4-harmony` (cut from the v3 show
-build `temp-show-marks`). Design approved by Ian; exploration, not the show
-build. Listening and hands-on play are the open gate.
+Status: playable on branch `temp-v4-harmony` (to be renamed `v4`), cut from
+the v3 show build `temp-show-marks` and merged with it at aea412b. Design and
+key map approved by Ian; exploration, not the show build. Listening and
+hands-on play are the open gate.
 
 ## Idea
 
 Ambient harmony lives in smooth single-note shifts. You never name a chord:
 each key moves the harmony from where it is now with minimal voice movement,
 using the neo-Riemannian P, L and R swaps plus diatonic steps and fifths. You
-steer by feel, it is impossible to play wrong, every key sits on the home row,
-and it works with eyes closed.
+steer by feel, it is impossible to play wrong, and it works with eyes closed.
 
 ## Against the North Star posture
 
-The owner's "video game engine of music generators" posture (`docs/NORTH_STAR.md`,
-committed as 19d527d on `temp-show-marks` after this branch was cut, so not in
-this branch's copy) names Push the Harmony as its example. How this mock-up
-scores against each preference:
+The owner's "video game engine of music generators" posture
+(`docs/NORTH_STAR.md`, 19d527d) names Push the Harmony as its example, and the
+v4 key map follows the owner's columnar keyboard (a ZSA Voyager: keys directly
+above and below a home-row key are sizes or variants of the same move).
 
 - **Moves, not set values or prepared material.** Every key is relative to
-  the chord sounding now; nothing is named, chosen from a list, or authored
-  ahead. Release returns to the prepared progression, but only as an exit.
+  the chord sounding now; nothing is named or chosen from a list. There is no
+  key back to the authored progression: once pushed, the home row is the
+  instrument, and the authored progression is only the starting point.
 - **Cannot be played wrong.** Every move key always produces a chord: the
   diminished P/L/R neighbours exist so no key is a dead end, and every chord
-  stays inside MIDI 40-79. `u` with nothing to undo and `g` with nothing pushed
-  say so and change nothing.
+  stays inside MIDI 40-79. Undo with nothing to undo says so and changes
+  nothing.
 - **Rewards practice.** Unquantized (the default), every key is its own
-  change, so chords are played live. Quantized, moves chain before the line
-  (`l l`, `f d`), so speed buys bigger moves per line. Voice leading is deterministic: the same chain
-  from the same chord always sounds the same, which is what lets it become
-  muscle memory. Undo makes a wrong chain cheap to recover from.
-- **Eyes-closed, home row, each key always means the same thing.** All eight
-  moves sit on the home row and mean the same thing every time inside the
-  mode, and `c` then a key is always the same two-key move. Open tension: the
-  same letters mean other things in browsing (`hjkl` move and adjust, `a`
-  vamps, `u` randomizes the selected knob), so the meaning depends on the
-  mode. The approved design accepts this. The latched mode is where it
-  matters most, since you have to remember you are in it.
+  change, so chords are played live; bigger jumps are their own keys (`u`,
+  `m`, `i`, `,`) rather than repeated taps. Quantized, moves chain before the
+  line (`l l`, `f d`). Voice leading is deterministic: the same chain from
+  the same chord always sounds the same, which is what lets it become muscle
+  memory. Undo makes a wrong chain cheap to recover from.
+- **Eyes-closed, each key always means the same thing.** The thumb on Space
+  says "harmony"; the fingers stay on the home row. The letters still mean
+  other things in browsing (`hjkl` move and adjust, `a` vamps), but the held
+  thumb makes the mode physical rather than remembered: there is no latch to
+  forget.
 - **Prepare more, play less?** No setup is needed: no chord bank, no key
-  choice. The latch adds one mode to keep track of; the one-shot `c` does not.
+  choice, no mode to keep track of.
 
 ## Keys
 
-`c` in Browsing opens the mode for one move, then returns to Browsing.
-Shift+`C` latches it until Esc. A terminal that reports the bare glyph `C`
-latches it too. Ctrl+C still quits. Inside the mode only:
+Hold Space: taps chain while it is down, each landing per the quantize
+setting, and letting go returns to browsing. Space alone never edits
+anything. A terminal without key-release reporting gets Space then one key
+as one move. Focus loss ends a held push. Ctrl+C still quits.
 
-| key | move | from A minor |
+| key (Space held) | move | from A minor |
 | --- | --- | --- |
-| `j` | step down the home scale | G |
-| `k` | step up the home scale | B dim |
-| `h` | down a fifth (resolve) | D minor |
-| `l` | up a fifth (lift) | E minor |
-| `f` | R, relative swap | C major |
-| `d` | P, parallel major/minor flip | A major |
-| `s` | L, leading-tone swap | F major |
-| `a` | home: the key's tonic triad | A minor |
-| `u` | undo the last move (16 deep) | |
-| `g` | release: back to the authored progression | |
+| `j` / `u` / `m` | down 1 / 2 / 3 scale steps | G / F / Em |
+| `k` / `i` / `,` | up 1 / 2 / 3 scale steps | Bdim / C / Dm |
+| `h` | down a fifth (resolve) | Dm |
+| `l` | up a fifth (lift) | Em |
+| `f` | R, relative swap | C |
+| `d` | P, parallel major/minor flip | A |
+| `s` | L, leading-tone swap | F |
+| `a` | home: the key's tonic triad | Am |
+| Backspace | undo the last move (16 deep) | |
+
+The rows above and below the other move columns stay unbound for now.
 
 Where a move lands is the chord quantize setting. It defaults to off: a move
-lands on the next sample, so chords can be played live, and each key is its
-own change. `/harmony quantize 1`, `2` or `4` (palette rows `Harmony quantize
-off/1 bar/2 bars/4 bars`) make moves wait for the next 1, 2 or 4 bar line;
-then a second move before that line composes from the queued chord and keeps
-the same line, so `l l` is two fifths up. Changing the setting re-times a
-waiting move from now (off lands it at once). The header shows the sounding
-chord and the queued one, with a bar countdown only when quantized
-(`CHORDS  C → G in 1 bar  PUSH`); the overlay's first line shows the setting
-(`now C → G   quantize 1 bar`). The overlay lists the eight moves with the
-chord each would produce from the current base, which is the eyes-open
-learning aid. Every move, undo and release is also a `/` operation (`/harmony
-lift`, alias `/push l`, and so on).
+lands on the next sample. `/harmony quantize 1`, `2` or `4` (palette rows
+`Harmony quantize off/1 bar/2 bars/4 bars`) make moves wait for the next 1,
+2 or 4 bar line, where a second move before the line composes from the
+queued chord and keeps the line. Changing the setting re-times a waiting move
+from now. The header shows the sounding chord and the queued one, with a bar
+countdown only when quantized (`CHORDS  C → G in 1 bar  PUSH`). The overlay
+shows now/next and the quantize setting, the two step columns laid out as on
+the keyboard (`u j m`, `i k ,`), and the other moves, each with the chord it
+would produce: the eyes-open learning aid. Every move and undo is also a `/`
+operation (`/harmony lift`, alias `/push l`).
 
-Physical holds keep running through the mode, as with the section leaders.
+Physical holds keep running through the mode, as with the other performance
+leaders.
+
+### The rest of the v4 key map
+
+- `'` is go: `'1`-`'9` queue states and `''` the previous one, as before;
+  `'a s d f q w e r` open layers and `'j`/`'k` reach Level/Filter on the page
+  in front of you (moved from Space). Digits, `'`, layer and parameter keys
+  are disjoint sets, so nothing collides inside the leader.
+- `"` is keep: `"1`-`"9` store states (unchanged).
+- `g` is grab: `g1 g2 g4 g8` grab Motion on the selected knob, or on the
+  selected field in an automation editor (moved from Space 1/2/4/8). `G1 G2
+  G4 G8` will grab the chords pushed over the last N bars and make them the
+  looping progression, replacing the loop outright (PM ruling); in this build
+  `G` is a stub that says so and changes nothing (see below).
+- Planned mute (`Space m`) is retired with its palette row and OSC surfaces;
+  a song code carrying one is refused as `RetiredControl("planned mute")`.
 
 ## Harmony model (`src/fluid/voice/triad.rs`)
 
@@ -84,7 +100,8 @@ Physical holds keep running through the mode, as with the section leaders.
 - The key is the progression's home (`progression_home`: tonic and one of the
   five home modes). Custom uses its A-minor home.
 - Steps take the next scale degree strictly below or above the root (so an
-  off-scale root steps onto the scale) and the mode's own triad there.
+  off-scale root steps onto the scale) and the mode's own triad there; a 2 or
+  3 step is that many single steps (test-enforced).
 - Fifths are perfect fifths. In the scale they take the diatonic quality;
   outside it they keep the current quality.
 - P, L and R are the textbook swaps on major and minor triads. Each is an
@@ -107,27 +124,27 @@ Physical holds keep running through the mode, as with the section leaders.
   does: the engine narrows the chord window to the sounding slot and overlays
   the pushed chord on it (`PadControls::held_chord`, audio-only, like the
   existing automation overlay). Pad, Arp and Lead read the pushed notes through
-  `pad_chord_tones`, and every chord follower treats it as sounding (never a
-  Rest). Bass moves its authored line by the root's distance within a tritone
-  (`root_near`), so it follows the new root in its own register. A pushed chord, its release and an undo change exactly as an authored Sound
-  step does (the incoming layer fades in from silence over the pad Attack, the
-  outgoing one rings out over Release), and a held chord sustains across
-  chord boundaries without re-striking. `a_pushed_change_sounds_like_an_authored_one`
-  compares the envelopes. The first mock slurred pushes in (the incoming layer
-  started at the level the pad held), which put the new pitch in at about
-  two thirds of full level at once: the jolt Ian heard.
-- Release (`g`, or undo back past the first move) lands like a move: the held slot's authored chord sounds again and the progression moves
-  on at its next chord boundary. This is the clean way back; the Vamp (`a` in
-  Browsing) stays independent.
+  `pad_chord_tones`, and every chord follower treats it as sounding. Bass
+  moves its authored line by the root's distance within a tritone
+  (`root_near`), so it follows the new root in its own register.
+- A pushed chord and an undo change exactly as an authored Sound step does:
+  the incoming layer fades in from silence over the pad Attack, the outgoing
+  one rings out over Release, and a held chord sustains across chord
+  boundaries without re-striking. `a_pushed_change_sounds_like_an_authored_one`
+  compares the envelopes. (The first mock slurred pushes in, so the new pitch
+  arrived at about two thirds of full level at once: the jolt Ian heard.)
+- Undo walks back through pushed chords and never past the first landed push.
 - Without an audio clock (replay, tests) the production tick lands the queue,
-  the same fallback the Vamp and planned mute use.
+  the same fallback the Vamp uses.
 
 ## Persistence
 
 Song record 16 (version 1) carries the held chord (slot, root, quality, four
-notes) and a queued target (chord or release): at most 12 bytes. A queued move
-lands on the loaded song's first bar; a restart lands it on bar one. Undo
-history is live-only.
+notes) and a queued triad: at most 12 bytes. A queued move lands on the loaded
+song's first bar; a restart lands it on bar one. Undo history is live-only.
+Malformed, inconsistent or trailing records are refused with
+`SongCodeError::InvalidPushHarmony`, including tag 2, the retired queued
+release. A state landing takes the destination's own push state.
 
 The quantize setting is not saved in song codes. Commandment 4 says a code
 saves the musical state a person chose. Quantize produces no sound on its own:
@@ -135,27 +152,28 @@ it only decides when the player's *next* key lands, the way key repeat or a
 display choice would. It is a play-style preference of the player, not part
 of the song, so sharing a code must not change how someone else's keys
 respond. What it already affected is saved: the pushed chord and any queued
-move. It lives in the live session (`PushedHarmony::quantize`), survives
-section landings, resets to off on launch, and needs no record or migration. Malformed, inconsistent or trailing records are refused
-with `SongCodeError::InvalidPushHarmony`. A section landing takes the
-destination's own push state.
+move. It lives in the live session (`PushedHarmony::quantize`), survives state
+landings, resets to off on launch, and needs no record or migration.
 
-## What the mock leaves out
+## What this build leaves out
 
-- Smear (hold Space to glide a move over a whole bar) is not built. A real
-  glide needs per-voice pitch glides in `PadLayer`, which does not exist; the
-  mock lands every move through the authored chord-change path. Space keeps its Jump
-  meaning.
-- Triads only: no sevenths or tensions on pushed chords, and no augmented
-  quality (no home mode produces one).
-- The move composes from the chord sounding when the key is pressed. With a
-  sub-bar Chord Length, a chord boundary between the press and the bar is not
-  re-read.
+- `G` harmony grab is a stub. Doing it properly needs: a log of landed pushes
+  with their beats; a progression lane that can hold any pushed triad with
+  its voicing and its own length (the legacy eight-field chord slot cannot
+  spell every diminished triad or keep a voice-led voicing, and its uniform
+  Chord Length cannot hold free-timed unquantized pushes); and a rule for
+  consecutive identical chords so the pad does not re-strike them. That is
+  ADR 0002's Cell lane (harmony, voicing, gate per step); building it inside
+  this mock would be a parallel chord model. Recommended next: land the Cell
+  lane, then G-grab writes Cells.
+- Smear (glide a move over a whole bar) is not built: it needs per-voice
+  pitch glides in `PadLayer`.
+- Triads only: no sevenths, tensions or inversions on pushed chords (Ian:
+  out of scope), and no augmented quality (no home mode produces one).
+- With a sub-bar Chord Length, a chord boundary between a quantized press and
+  its line is not re-read.
 - OSC state publishing (`/nooise/state/*`) still reports the authored slot;
   OSC note output follows the pushed notes.
-- Arrows and Tab do nothing while the latched mode is open. The one-shot `c`
-  entry keeps the arrows-and-Tab floor intact; the latch is the opt-in
-  exception Ian approved. Revisit if the latch feels like a Deck mode.
 - A push does not exit auto morph, the same as the Vamp.
 
 ## What only listening can confirm
@@ -163,7 +181,7 @@ destination's own push state.
 - Whether the authored crossfade (6 s attack, 8 s release by default) makes
   fast chained pushes feel responsive enough, or blur together.
 - Whether minimal voice leading keeps the pad's colour when the authored
-  chord was a wide voicing (Am11 collapses to a close triad).
+  chord was a wide voicing (Am7add11 collapses to a close triad).
 - Whether the Bass register rule (within a tritone of the slot's root) sounds
-  like it follows, especially on fifths.
+  like it follows, especially on fifths and 3-step jumps.
 - Whether the diminished P/L/R choices feel right.

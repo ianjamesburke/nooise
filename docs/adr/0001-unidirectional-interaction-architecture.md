@@ -1,6 +1,6 @@
 # ADR 0001: Unidirectional interaction architecture
 
-- Status: Accepted; implemented, amended 2026-10-03 for the Space map, planned mute, and Motion Grab
+- Status: Accepted; implemented, amended 2026-10-03 for the Space map, planned mute, and Motion Grab; amended 2026-11-11 (v4 key map) to retire the Space map and planned mute, move layer jumps to `'`, Motion Grab to `g`, and give Space to held Push the Harmony
 - Date: 2026-07-29
 - Scope: terminal input, UI state transitions, live-session effects, and
   rendering
@@ -69,8 +69,9 @@ automation editing, palette use, and future performance grammar directly.
 ### Keyboard ownership and legal states
 
 1. Exactly one `InteractionMode` variant owns keyboard input at a time.
-   Browsing, numeric entry, palette, automation editing, the Jump leader,
-   the state leaders, and Lead play cannot be simultaneously active. Temporary effect gestures belong to
+   Browsing, numeric entry, palette, automation editing, the performance
+   leaders (go/keep, grab, Push the Harmony), and Lead play cannot be
+   simultaneously active. Temporary effect gestures belong to
    Browsing and do not take over navigation. Their audio returns can continue
    after another mode takes keyboard ownership.
 2. Mode-specific data is stored inside its owning enum variant. Illegal
@@ -188,11 +189,12 @@ The production modules under `src/fluid/` follow these boundaries:
 - `session.rs` owns aggregate publication and the shared audio clock.
 - `operation.rs` owns the closed palette operation catalog; commands resolve
   to typed effects before reaching the executor.
-- `planned.rs` owns typed next-bar actions. The audio engine commits planned
-  mute at the downbeat; the production tick advances it only without audio.
+- `planned.rs` owns the chord vamp. Planned mute is retired (v4 amendment);
+  `push.rs` owns Push the Harmony's queued moves, which the audio clock lands
+  and the production tick lands only without audio.
 - `capture.rs` owns bounded manual history and Motion loops on registry
   controls and automation editor fields; `song.rs` persists their phase and
-  queued admission alongside planned actions.
+  queued admission.
 - `view.rs` projects immutable render data; `ui.rs` draws it.
 - `gesture.rs` owns scalar performance envelopes; `engine.rs` and
   `engine/gesture_audio.rs` apply them through shared audio processors.
@@ -234,12 +236,13 @@ the runtime or effect executor.
    switch the live terminal loop, and remove raw-key mutation, independent
    modal flags, the unbounded drain, and the many-argument render interface.
 7. **Rebuild performance interaction.** Normal-browsing gestures replace the
-   persistent Deck workflow. Space opens an immediate map. A layer key
-   restores its remembered row and returns to Browsing; `j`/`k` reach the
-   current page's Level/Filter. `m` plans or cancels next-bar mute, and
-   `1/2/4` grabs one-, two-, or four-bar Motion. An editor-field grab or
-   cancelled editor leader returns to that editor and row. All routes are
-   Press edges and work on press-only terminals.
+   persistent Deck workflow. Since the v4 amendment, `'` (go) restores a
+   layer's remembered row and returns to Browsing, and `' j`/`' k` reach the
+   current page's Level/Filter; `g 1/2/4/8` grabs Motion, and an editor-field
+   grab or cancelled grab returns to that editor and row. These routes are
+   Press edges and work on press-only terminals. Space held is Push the
+   Harmony: its key-up closes it, and a press-only terminal gets one move per
+   Space tap.
 
 Audio DSP, audio routing, registry value semantics, automation math, and song
 serialization are outside this refactor. For unchanged seeds and session
@@ -267,14 +270,14 @@ With press-only capabilities, gesture keys are inert and the help states why.
 Rendered audio must prove a swell, a continuous partial release, a click-free
 50 ms Bloom release, and a surviving Echo tail; input and footer checks alone do not establish this behavior.
 
-### Duplicate Jump leader (double Space)
+### Duplicate leader (double `g`)
 
-Given ordinary browsing and two Space events available before the next poll,
-the leader enters `ChooseLayer` once. Repeat is ignored and a second distinct
-activation is idempotent; Space does not cancel a pending jump. A frame
-showing `ChooseLayer` completes within 50 ms before any later layer intent is
+Given ordinary browsing and two `g` events available before the next poll,
+the grab leader opens once. Repeat is ignored and a second distinct
+activation is idempotent; it does not cancel the pending grab. A frame
+showing the grab map completes within 50 ms before any later intent is
 processed past a due render boundary. No control or automation effect is
-emitted.
+emitted. Space down, autorepeat and up alone likewise emit no effect.
 
 ### Sustained repeat under a permanently ready source
 
@@ -286,18 +289,14 @@ subsequent `Release` and Escape without starvation. Repeating any
 edge-triggered leader, save, quit, confirmation, or cancellation command emits
 no duplicate semantic action.
 
-### Planned mute and Motion Grab
+### Layer jumps and Motion Grab
 
-At 46x11, Space shows its layer routes, current-page actions, and cancellation
+At 46x11, `'` shows its state slots, layer routes and current-page actions
 while leaving the stable footer visible. Layer selection completes immediately;
 arrows and Tab resume, and returning to a layer restores its remembered row.
+Planned mute is retired; a song code carrying one is refused by name.
 
-`Space m` publishes a typed planned mute for the current layer. Repeating the
-sentence before the boundary cancels it. The audio gate leads into the target
-downbeat so its first onset has the new mute state. Saving rebases the remaining
-wait to song beat zero.
-
-`Space 1/2/4/8` and the corresponding palette operations capture 4/8/16/32 beats
+`g 1/2/4/8` and the corresponding palette operations capture 4/8/16/32 beats
 ending at the nearest bar. A future anchor queues; a past anchor joins at its
 running phase. Numeric curves offset the current authored base; direct edits
 keep their phase and enabled state. All Motion/LFO/envelope contributions sum

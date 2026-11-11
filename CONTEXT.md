@@ -41,7 +41,8 @@
   layers, each showing its level and opening that layer on Enter; Master's
   own controls follow. Tab reaches it after Lead, and Esc from a layer's
   root returns to it on that layer's row.
-- **State leader:** a pending `'` or `"` that waits for one digit `1`-`9` naming a stored-state slot. `'` is go: a digit queues that state (a second `'` queues the previous one), a layer key opens that layer, `j`/`k` reach Level/Filter on the open page, and `"` stores the current song there, replacing any stored one. It opens only from browsing, acts on key presses, and leaves physical holds running.
+- **State leader:** a pending `'` (go) or `"` (keep). Go: a digit `1`-`9` queues that stored state (a second `'` queues the previous one), a layer key opens that layer, and `j`/`k` reach Level/Filter on the open page. Keep: a digit stores the current song there, replacing any stored one. It opens only from browsing, acts on key presses, and leaves physical holds running.
+- **Grab leader:** a pending `g` waiting for `1`/`2`/`4`/`8` bars of the selected knob's or editor field's movement to keep as Motion; `G` targets the pushed harmony (not built yet).
 - **State (stored state):** one numbered slot, 1-9, in the state bank. It
   holds a whole song snapshot (controls and automation) that the performer
   stored from the live song and recalls with the State leader or `/queue state
@@ -88,12 +89,13 @@
   chord. An auto morph keeps the outgoing harmony through whole phrases
   with Kick and Bass silent, then starts the incoming window at its first
   chord on landing.
-- **Push the Harmony:** steering the harmony by single-voice moves from the
-  chord sounding now (P, L, R, diatonic steps, fifths, home), never by naming
-  a chord. A **move** lands at once, or on the next 1, 2 or 4
-  bar line when **chord quantize** is set, composing with one already queued. The **pushed chord** is the triad a landed move sounds; it holds the
-  progression on its slot until **release** hands back to the authored
-  progression.
+- **Push the Harmony:** steering the harmony by moves from the chord
+  sounding now (P, L, R, scale steps of 1-3, fifths, home) while Space is
+  held, never by naming a chord. A **move** lands at once, or on the next 1,
+  2 or 4 bar line when **chord quantize** is set, composing with one already
+  queued. The **pushed chord** is the triad a landed move sounds; it holds
+  the progression on its slot from then on (there is no way back but a
+  state or song change).
 - **Morph leg:** an outgoing song's hold followed by its crossing into the
   next song. `--bars` requests an approximate total length. Hold and crossing
   each round to whole outgoing phrases, at least one phrase each.

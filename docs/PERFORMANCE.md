@@ -60,36 +60,50 @@ that still uses the old letter names A, B and C, is refused with a message at
 launch (states are now numbered 1 to 9); nothing translates an old file. The
 current song keeps playing.
 
-## Push the Harmony (v4 mock-up)
+## Push the Harmony (v4)
 
-`c` opens Push the Harmony for one move and returns to browsing; Shift+`C`
-keeps it open until Esc. Inside it the home row pushes the harmony from where
-it is now, never by naming a chord: `j`/`k` step down/up the home scale,
-`h`/`l` move down/up a fifth, `f` is the relative swap (R), `d` the
-major/minor flip (P), `s` the leading-tone swap (L), and `a` returns to the
-key's tonic. `u` undoes the last move (16 deep) and `g` hands the harmony back
-to the authored progression. Outside the mode every key keeps its browsing
-meaning. Each action is also a `/` operation (`/harmony lift`, `/push l`).
+Hold Space with the thumb and the keys under the fingers push the harmony
+from where it is now, never by naming a chord. Taps chain while Space is
+down; letting go returns to browsing. Space alone never changes anything.
+On a terminal that cannot report key releases, tap Space then one key: one
+move.
+
+| key | move | from A minor |
+| --- | --- | --- |
+| `u` / `j` / `m` | down 2 / 1 / 3 scale steps | F / G / Em |
+| `i` / `k` / `,` | up 2 / 1 / 3 scale steps | C / Bdim / Dm |
+| `h` / `l` | down / up a fifth | Dm / Em |
+| `f` | relative swap (R) | C |
+| `d` | major/minor flip (P) | A |
+| `s` | leading-tone swap (L) | F |
+| `a` | home: the key's tonic | Am |
+| Backspace | undo the last move (16 deep) | |
+
+The step keys sit in columns: on a columnar keyboard the key above or below
+`j` and `k` is a bigger step the same way. There is no key back to the
+authored progression: once pushed, the home row is the instrument (a state
+recall or another song is the way out), and undo stops at the first landed
+push. Every move and undo is also a `/` operation (`/harmony lift`,
+`/push l`, `/harmony down 2 steps`).
 
 By default a move lands at once, so chords can be played live.
-`/harmony quantize 1`, `2` or `4` makes moves wait for the next 1, 2 or 4 bar
-line, and `/harmony quantize off` returns to playing live; the setting is
-shown in the overlay, is not saved with songs, and re-times a waiting move
-when changed. While quantized, a second move before the line composes from
-the queued chord and keeps the line, so `l l` is two fifths up. The pad voices the
-new triad from the notes it is sounding, each voice moving to a nearby chord
-tone, and changes exactly as an authored chord does: the new chord fades in
-over the pad Attack while the old one rings out over Release. The Bass
-follows the new root in its own register.
-While pushed, the progression is held on the sounding slot like a Vamp; `g`
-(or undoing past the first move) brings the authored chord back the same way
-and the progression moves on at its next chord boundary. The header reads
-`CHORDS  C → G in 1 bar  PUSH` (the countdown only when quantized), and the overlay lists the eight moves with the
-chord each would produce. A saved song keeps the pushed chord and any queued
-move, which lands on the loaded song's first bar; undo history is not saved.
-Opening, pushing and leaving keep physical holds running, and Ctrl+C still
-quits. Smear (hold Space to glide a move over a bar) is not built in the
-mock-up. `proposals/2026-11-11-v4-push-the-harmony.md` owns the design.
+`/harmony quantize 1`, `2` or `4` makes moves wait for the next 1, 2 or 4
+bar line, and `/harmony quantize off` plays live again. The setting shows in
+the overlay, is not saved with songs, and re-times a waiting move when
+changed. While quantized, a second move before the line composes from the
+queued chord and keeps the line, so `l l` is two fifths up. The pad voices
+the new triad from the notes it is sounding, each voice moving to a nearby
+chord tone, and changes exactly as an authored chord does: the new chord
+fades in over the pad Attack while the old one rings out over Release. The
+Bass follows the new root in its own register, and the progression stays on
+the sounding slot like a Vamp. The header reads `CHORDS  C → G in 1 bar
+PUSH` (the countdown only when quantized), and the overlay lists every move
+with the chord it would produce. A saved song keeps the pushed chord and any
+queued move, which lands on the loaded song's first bar; undo history is not
+saved. Holding Space, pushing and letting go keep other physical holds
+running, Ctrl+C still quits, and losing focus ends a held push. Smear (glide
+a move over a bar) is not built. `proposals/2026-11-11-v4-push-the-harmony.md`
+owns the design.
 
 ## Slapback preset
 
@@ -187,13 +201,13 @@ survive its return.
 Held gestures stay active while Escape backs out of browsing drills and layers;
 at the hub root with no gesture key held, Escape releases any restored holds
 loaded from a song code.
-Opening a keyboard-owning editor, Lead play, the palette or the Jump leader
-releases gestures. A key held through that transition must be released before
+Opening a keyboard-owning editor, Lead play or the palette releases
+gestures. A key held through that transition must be released before
 it can start another gesture. Reported focus loss and shutdown also release held
-gestures. The exceptions are the state leaders (`'` and `"`) and Push the
-Harmony: opening one, completing it, or cancelling it leaves a physical hold
-running, and a key-up while one is open releases the hold exactly as in
-browsing. On a
+gestures. The exceptions are the performance leaders (go `'`, keep `"`, grab
+`g`) and Push the Harmony (Space held): opening one, completing it, or
+cancelling it leaves a physical hold running, and a key-up while one is open
+releases the hold exactly as in browsing. On a
 terminal without key-release support, the latched `q` and `a` toggles are state
 rather than holds and likewise survive.
 
@@ -258,44 +272,41 @@ untouched, like mute.
 A song code never carries the stopped state. A stopped song is silence,
 not a state worth sharing, so a loaded code always plays.
 
-## Jump
+## Go, keep and grab
 
-Space is a leader key. A layer key opens that layer at the row last active
-there and hands the keyboard straight back to browsing, where `h`/`l`
-adjust it and `j`/`k` move as always. `Space j` and `Space k` put the
-cursor on Level or Filter for the page already open. The leader changes
-nothing by itself: it is an address, not an edit.
+`'` is go and `"` is keep (see Prepared states). Go also reaches layers: a
+layer key opens that layer at the row last active there and hands the
+keyboard straight back to browsing, where `h`/`l` adjust it and `j`/`k` move
+as always. The layer keys read down the hub's layer rows, so their positions
+mirror the layers on screen: `a` Pads, `s` Perc, `d` Bass, `f` Kick, `q`
+Tonal, `w` Clap, `e` Arp, and `r` the hub itself. `' j` and `' k` put the
+cursor on Level or Filter of the page already open, which is also the way
+to Lead's Level. Go changes nothing by itself: it is an address, not an
+edit. Digits, `'`, layer keys and `j`/`k` never collide inside the leader.
 
-The layer keys read down the hub's layer rows, so their positions mirror
-the layers on screen: `a` Pads, `s` Perc, `d` Bass, `f` Kick, `q` Tonal,
-`w` Clap, `e` Arp, and `r` the hub itself. `j` is volume and `k` is filter.
+Volume is the layer's own Level row. `' k` opens the shared Filter detail on
+Cutoff. The collapsed Filter row also controls Cutoff on every layer. A newly
+added Filter starts at Amount 0% and opens its detail on Amount, so the first
+right arrow brings in the filter before a Cutoff sweep. Bass, Kick, Perc and
+Clap ship with a filter in slot 1, so `k` lands on the cutoff already in play.
+Pads gets one added into its first free slot at a transparent 20 kHz cutoff
+and Amount 0%, so arriving is silent. A layer whose chain is full says so and
+stays put.
 
-Lead is the one page no selector key names. It already owns `i` for play
-entry, and the shorthand below reaches it from its own page.
-
-Skipping the layer key aims at the page you are already on, so `Space k` is
-the filter on whatever is in front of you. That shorthand is the only way
-into Lead, and stays the quickest route to the page already in front of
-you.
-
-`Space m` arms the visible layer's mute for the next bar. Its breadcrumb and
-hub row show a small `m` until the boundary, where it becomes `(M)`. The audio
-gate completes its click-free ramp before that downbeat, so its first onset is
-already muted or audible. Repeating
-`Space m` before that bar cancels the same planned mute. The action is part of
-the saved session state, rebased to the next song's beat zero. Escape leaves a
-pending leader; Space while it is pending is inert.
-
-`Space 1`, `Space 2`, `Space 4`, and `Space 8` grab Motion from the selected knob: the
-last one, two, four, or eight bars. A grab belongs to its nearest bar downbeat. When
-that downbeat is ahead, the current value holds until it arrives and the loop
-starts there. When it has passed, the loop joins immediately at the phase it
-would already have reached from that downbeat. Its last value holds
-through the remainder of its real one-, two-, four-, or eight-bar phrase. The
-following downbeat starts the next pass; continuous movement uses the
-existing de-clicker and discrete choices switch at their recorded times. The
-palette keeps the same Motion Grab choices: 4, 8, 16, or 32 beats. Searching
-`grab 4 bars` or `grab 8 bars` also reaches the matching duration.
+`g` is grab. `g 1`, `g 2`, `g 4` and `g 8` grab Motion from the selected knob:
+the last one, two, four, or eight bars. In an LFO or envelope editor, `g`
+then a digit grabs the selected field and the editor stays open. `G` then a
+digit will make the chords pushed over the last bars the looping
+progression, replacing it outright; it is a stub in this build and says so.
+A grab belongs to its nearest bar downbeat. When that downbeat is ahead, the
+current value holds until it arrives and the loop starts there. When it has
+passed, the loop joins immediately at the phase it would already have
+reached from that downbeat. Its last value holds through the remainder of
+its real one-, two-, four-, or eight-bar phrase. The following downbeat
+starts the next pass; continuous movement uses the existing de-clicker and
+discrete choices switch at their recorded times. The palette keeps the same
+Motion Grab choices: 4, 8, 16, or 32 beats. Searching `grab 4 bars` or
+`grab 8 bars` also reaches the matching duration.
 
 Numeric Motion shifts with the knob's base: turning a captured Level, Cutoff,
 or Interval keeps the loop running at the same phase around the new value.
@@ -305,42 +316,22 @@ Bypass, Resume, and Delete keep their lifecycle roles.
 
 Motion Grab also works on discrete controls: Lead pitch cells, Lead Steps,
 Pads Trigger (Hold/Stabs), and the other registry switches and choices.
-They replay each recorded value at its edit time. In an LFO or envelope
-editor, select any field—including LFO shape, Steps count/glide/value, or
-envelope trigger—then use `Space 1/2/4/8` to grab that field; `/` offers the
-same Motion Grab choices. The editor stays open after a leader grab. A small
-`↻` on an editor row means its Motion is active; `○` means bypassed. On a
-selected row, `/Motion Bypass`, `/Motion Resume`, and `/Motion Delete` address
-that row's Motion. Bare `/bypass`, `/resume`, and `/delete` still address the
-open LFO or envelope lane. Numeric editor fields also shift with their base;
-choices such as Shape, Trigger, and Steps count replay their recorded values.
-For these choices the activity row says `edit bypasses`: a manual edit bypasses
-the loop and takes over. Resume waits for the next bar while retaining loop
-phase. A saved song restores either kind of loop and its phase. Editor sliders
-show the authored base plus a bright marker for the value currently playing.
-The selected editor field stays in view at the minimum 46x11 frame.
+They replay each recorded value at its edit time. A small `↻` on an editor
+row means its Motion is active; `○` means bypassed. On a selected row,
+`/Motion Bypass`, `/Motion Resume`, and `/Motion Delete` address that row's
+Motion. Bare `/bypass`, `/resume`, and `/delete` still address the open LFO or
+envelope lane. Numeric editor fields also shift with their base; choices such
+as Shape, Trigger, and Steps count replay their recorded values. For these
+choices the activity row says `edit bypasses`: a manual edit bypasses the
+loop and takes over. Resume waits for the next bar while retaining loop
+phase. A saved song restores either kind of loop and its phase. Editor
+sliders show the authored base plus a bright marker for the value currently
+playing. The selected editor field stays in view at the minimum 46x11 frame.
 
-Volume is the layer's own Level row. `Space k` opens the shared Filter detail
-on Cutoff. The collapsed Filter row also controls Cutoff on every layer.
-A newly added Filter starts at Amount 0% and opens its detail on Amount, so
-the first right arrow brings in the filter before a Cutoff sweep.
-Bass, Kick, Perc and Clap ship with a filter in slot 1, so `k` lands on the cutoff
-already in play. Pads gets one added into its first free slot at a
-transparent 20 kHz cutoff and Amount 0%, so arriving is silent. Raise Amount
-in its detail before sweeping Cutoff. A layer whose chain is full says so and stays
-put.
-
-Layer and parameter routes move the cursor; `Space m` schedules mute and
-`Space 1/2/4/8` keeps Motion. Every route acts on a press and needs no
-key-release support. The leader renders a compact centered
-Jump menu: layers form a two-column list, current-page Volume, Filter, and
-Mute share a row with Motion Grab, and `Esc Cancel` has the bottom row. The footer remains
-visible.
-
-Motion Record and a shared lane editor remain deferred. `Space 1/2/4/8` are
-assigned to Grab; state-mark recall has its own routes, the `'` and `"` state
-leaders above.
-
+Every go and grab route acts on a press and needs no key-release support.
+Each leader renders a compact centered map; the footer remains visible.
+Planned mute (the old `Space m`) is retired: a song code carrying one is
+refused by name. Motion Record and a shared lane editor remain deferred.
 Lead play retains its own `i` entry and existing bindings.
 
 ## Audio smoke
@@ -350,22 +341,18 @@ Lead play retains its own `i` entry and existing bindings.
 3. Tap `a` and inspect `VAMP` beside the chord. Tap again and inspect `VAMP ENDING` until the next chord boundary. Check both at 46x11 and while browsing another layer.
 4. Open the palette while holding a gesture, return to Browse, and keep the key down. It must stay released until a fresh press after key-up. Test `/repeat` and Escape, and `/group mute` on a terminal without key-release support.
 5. Save with the q latch and Vamp active, reload the code, and confirm both resume. Save a held Beat Repeat and reload; the audio history must rebuild from live audio instead of containing captured samples.
-6. Move to a non-Level Bass row, then press Space, `d`: it returns to that
+6. Move to a non-Level Bass row, then press `'`, `d`: it returns to that
    remembered Bass row in Browse with nothing changed, and `h`/`j`/`k`/`l`
-   work at once. From Bass press Space, `j`: the cursor reaches Bass Level.
-   Press Space, `a`, then Space, `k`: a filter appears on the Pads chain,
+   work at once. From Bass press `'`, `j`: the cursor reaches Bass Level.
+   Press `'`, `a`, then `'`, `k`: a filter appears on the Pads chain,
    inaudible, cursor on its Cutoff row. Raise Amount in the detail, then `h`
-   sweeps Cutoff down. Repeat on
-   Bass and confirm `k` reaches the filter already in slot 1 without
-   resetting its cutoff or adding a second one. Press Space, `r`, then
-   Space, `j` and confirm it reaches Master Level. Repeat the direct layer
-   jump for Tonal, Clap, and Arp. On Lead, confirm Space, `j` still reaches
-   its Level.
-7. On Kick, press Space, `m`: its hub row and breadcrumb show `m` while the
-   sound continues. On the next bar it reads `(M)` and the Kick drops out
-   click-free with no first hit. Repeat Space, `m` before the boundary to cancel. Save while it
-   is armed, load the code, and confirm it still lands at the loaded song's
-   next bar.
+   sweeps Cutoff down. Repeat on Bass and confirm `k` reaches the filter
+   already in slot 1 without resetting its cutoff or adding a second one.
+   Press `'`, `r`, then `'`, `j` and confirm it reaches Master Level. On
+   Lead, confirm `'`, `j` reaches its Level.
+7. Move a knob for two bars, then `g`, `2`: the movement loops. Open its LFO
+   editor, move a field, `g`, `1`: the field loops and the editor stays open.
+   `G`, `4` says the harmony grab is not built yet and changes nothing.
 8. Press `?` from Browsing: the shortcut map should open over the
    breadcrumb and control rows, leaving both footer rows visible beneath
    it. Esc returns to Browsing.
@@ -392,13 +379,15 @@ Lead play retains its own `i` entry and existing bindings.
 12. Edit the set file to start a line with `A`: relaunch shows the refusal at
    launch and the song plays.
 
-13. On song 1 (A minor), press `c` then `f`: C fades in at once over the pad
-   Attack, exactly like the progression's own chord changes, with the least
-   voice movement, and the Bass steps up a minor third. `/harmony quantize 1`,
-   then Shift+`C` and `l` `l` before the bar: the header counts down and it
-   lands on B diminished. `u` walks back to E minor on the next bar; `g`
-   returns the authored chord on the bar after. Hold `w` through all of it:
-   Submerge stays held. Save with a chord pushed, reload: it sounds at once.
+13. On song 1 (A minor), hold Space and tap `f`: C fades in at once over
+   the pad Attack, exactly like the progression's own chord changes, with
+   the least voice movement, and the Bass steps up a minor third. Still
+   holding, tap `u` then `,`: two separate changes, a third down then a
+   fourth up. Let Space go: browsing keys work again. `/harmony quantize 1`,
+   then hold Space and tap `l` `l` before the bar: the header counts down and
+   it lands on B diminished. Hold Space and press Backspace: back to E minor
+   on the next bar. Hold `w` through all of it: Submerge stays held. Save
+   with a chord pushed, reload: it sounds at once.
 
 Acceptance requires rendered-audio checks as well as input replay and footer
 checks. The minimum supported frame is 46x11 — the two-row footer costs the

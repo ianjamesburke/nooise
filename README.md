@@ -59,19 +59,22 @@ a terminal that reports key releases; the footer shows when support is missing.
 Press `a` to hold the chord that lands on the next bar until you press `a`
 again; `Shift+A` or `/auto` toggles auto-morph.
 
-Space is a leader key: a layer key then a parameter (`j` volume, `k` filter)
-puts the cursor on that control, where `h`/`l` move it. The layer keys read
-down the hub's layer rows, `asdf` then `qwer`, so `a` is Pads and `r` is
-Master. Skip the layer key to aim at the page you are already on, so
-`Space k` is the filter on whatever is in front of you. It jumps, it does
-not edit.
+Hold Space and the home row pushes the harmony: `j`/`k` step down/up the
+scale (`u`/`i` and `m`/`,` are bigger steps), `h`/`l` move by fifths, `f`
+`d` `s` are the relative, major/minor and leading-tone swaps, `a` goes
+home, and Backspace undoes. Let go to browse again.
+
+`'` is go: a digit queues a state, a layer key (`asdf` then `qwer`, reading
+down the hub) opens that layer, and `j`/`k` reach Level/Filter on the page in
+front of you. `"` stores a state, and `g` then 1/2/4/8 grabs the last bars of
+a knob's movement as a loop.
 
 Press `Shift+P` to stop the clock and let the song end on its tails: nothing
 new plays, and reverb, delay, and releasing notes ring out. Press `Shift+P`
 again to start.
 
 See [live performance](docs/PERFORMANCE.md) for overlap, saving, the clock
-stop, and the Jump leader.
+stop, Push the Harmony, and go, keep and grab.
 
 ```sh
 nooise --osc
