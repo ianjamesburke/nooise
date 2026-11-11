@@ -765,7 +765,7 @@ mod input_tests {
     /// coordinator's own modal-entry release must spare it too. Jump, which
     /// keeps today's behaviour, still returns it.
     #[test]
-    fn restored_holds_survive_state_leaders_but_not_jump() {
+    fn restored_holds_survive_state_leaders_but_not_the_palette() {
         let restore = |rig: &Rig| {
             rig.session.update(|snapshot| {
                 let lane = &mut snapshot.gestures.lanes[GestureKind::Submerge as usize];
@@ -781,12 +781,18 @@ mod input_tests {
         }
         let mut rig = Rig::new(TerminalCapabilities::full());
         restore(&rig);
-        Rig::ok(rig.tap(' '));
-        assert!(!rig.submerge_held(), "Jump must keep releasing holds");
+        Rig::ok(rig.tap('/'));
+        assert!(
+            !rig.submerge_held(),
+            "the palette must keep releasing holds"
+        );
         let mut rig = Rig::new(TerminalCapabilities::full());
         Rig::ok(rig.tap('w'));
-        Rig::ok(rig.tap(' '));
-        assert!(!rig.submerge_held(), "Jump must keep releasing holds");
+        Rig::ok(rig.tap('/'));
+        assert!(
+            !rig.submerge_held(),
+            "the palette must keep releasing holds"
+        );
     }
 
     #[test]

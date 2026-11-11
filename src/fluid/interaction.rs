@@ -579,8 +579,9 @@ pub(crate) struct PaletteMode {
     pub(crate) staged: Vec<PaletteStagedEdit>,
     pub(crate) resume: Option<AutomationMode>,
     pub(crate) module_scope: Option<ModuleScope>,
-    /// The layer a planned operation addresses, frozen when the palette opens.
-    pub(crate) planned_tab: Option<Tab>,
+    /// The visible layer a layer-scoped operation addresses (Clear
+    /// sequence), frozen when the palette opens.
+    pub(crate) scope_tab: Option<Tab>,
     pub(crate) chord_target: Option<Box<super::operation::ChordTarget>>,
 }
 
@@ -683,11 +684,6 @@ impl AutomationMode {
             Self::Lfo { selected, .. } | Self::Envelope { selected } => selected,
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PerformanceKind {
-    Jump,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -851,21 +847,6 @@ impl PerformanceParameter {
     }
 }
 
-/// Where a pending Jump is: waiting for a layer, or waiting for the
-/// parameter on a layer already chosen. There is no third stage, because
-/// the parameter key completes the leader and returns to browsing.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum JumpStage {
-    #[default]
-    ChooseLayer,
-    ChooseParameter {
-        instrument: PerformanceInstrument,
-    },
-    AutomationRow {
-        mode: AutomationMode,
-    },
-}
-
 /// The two leaders on the `'` key. `'` is "go": a digit queues that state,
 /// a second `'` the previous one, a layer key opens that layer and `j`/`k`
 /// reach Level/Filter on the open page. `"` is "keep": a digit stores the
@@ -878,23 +859,14 @@ pub(crate) enum StateLeader {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PerformanceMode {
-    Jump {
-        stage: JumpStage,
-    },
     /// A pending `'` or `"`: the next key picks a state slot.
-    States {
-        leader: StateLeader,
-    },
+    States { leader: StateLeader },
     /// A pending `g` (Motion Grab on the selected knob or editor field) or
     /// `G` (grab the pushed harmony): the next digit names the bar count.
-    Grab {
-        target: GrabTarget,
-    },
+    Grab { target: GrabTarget },
     /// Push the Harmony: `c` opens it for one move, Shift+`C` latches it
     /// until Esc. Its home-row keys push the harmony instead of browsing.
-    Harmony {
-        latched: bool,
-    },
+    Harmony { latched: bool },
 }
 
 /// What a pending grab keeps.
@@ -908,31 +880,13 @@ pub(crate) enum GrabTarget {
     Harmony,
 }
 
-impl PerformanceMode {
-    fn new(kind: PerformanceKind) -> Self {
-        match kind {
-            PerformanceKind::Jump => Self::Jump {
-                stage: JumpStage::ChooseLayer,
-            },
-        }
-    }
-
-    /// Whether opening this leader leaves physical holds running. Jump
-    /// releases them like every other keyboard owner; the state leaders
-    /// exist to be played with a gesture key held down.
-    pub(crate) fn preserves_holds(self) -> bool {
-        match self {
-            Self::Jump { .. } => false,
-            Self::States { .. } | Self::Harmony { .. } | Self::Grab { .. } => true,
-        }
-    }
-}
-
 impl InteractionMode {
     /// Whether entering this mode from Browsing leaves physical holds
-    /// running instead of quarantining them.
+    /// running instead of quarantining them. Every performance leader (go,
+    /// keep, grab, harmony) is played with a gesture key held down; editors,
+    /// the palette and every other owner quarantine it.
     pub(crate) fn preserves_holds(&self) -> bool {
-        matches!(self, Self::Performance(performance) if performance.preserves_holds())
+        matches!(self, Self::Performance(_))
     }
 }
 
@@ -1219,7 +1173,6 @@ pub(crate) enum Intent {
         )
     )]
     OpenAutomationField,
-    ActivatePerformance(PerformanceKind),
     /// Open the layer named by the Jump leader and restore its remembered
     /// browsing cursor.
     SelectPerformanceInstrument {
@@ -1228,8 +1181,6 @@ pub(crate) enum Intent {
     /// Jump to a parameter on the page already open, then hand the keyboard
     /// back to browsing. Moves the cursor; never edits a value.
     JumpToParameter(PerformanceParameter),
-    /// Arm or cancel the visible layer's next-bar mute.
-    PlanMute,
     /// Open the `'` (queue) or `"` (store) state leader.
     OpenStateLeader(StateLeader),
     /// The 0-based section slot a pending state leader's digit names.
@@ -1392,14 +1343,8 @@ impl Intent {
                 ModeKind::Lead,
                 ModeKind::Help,
             ],
-            Self::ActivatePerformance(_) => &[
-                ModeKind::Browsing,
-                ModeKind::Automation,
-                ModeKind::Performance,
-            ],
             Self::SelectPerformanceInstrument { .. }
             | Self::JumpToParameter(_)
-            | Self::PlanMute
             | Self::GrabMotion(_)
             | Self::ChooseState(_)
             | Self::PreviousState
@@ -1444,10 +1389,8 @@ impl Intent {
             | Self::OpenAutomation(_)
             | Self::AddAutomation(_)
             | Self::OpenAutomationField
-            | Self::ActivatePerformance(_)
             | Self::SelectPerformanceInstrument { .. }
             | Self::JumpToParameter(_)
-            | Self::PlanMute
             | Self::GrabMotion(_)
             | Self::OpenStateLeader(_)
             | Self::ChooseState(_)
@@ -1578,8 +1521,6 @@ pub(crate) enum InteractionEffect {
     ToggleUnits,
     /// Mute or unmute this layer (or Master) as a whole.
     ToggleMute(Tab),
-    /// Arm or cancel this layer's mute at the next bar.
-    PlanMute(Tab),
     State(super::StateAction),
     /// The recall leader's digit: queue that state, or cancel the queue
     /// when it is already the queued one. The kernel cannot see the queue.
@@ -2009,7 +1950,7 @@ fn update_browsing(
         }
         Intent::OpenPalette => {
             *next_mode = Some(InteractionMode::Palette(Box::new(PaletteMode {
-                planned_tab: Some(navigation.mute_target()),
+                scope_tab: Some(navigation.mute_target()),
                 module_scope: match navigation {
                     Navigation::Module {
                         tab,
@@ -2036,9 +1977,6 @@ fn update_browsing(
         Intent::AddAutomation(kind) => {
             *next_mode = Some(InteractionMode::Automation(AutomationMode::new(kind)));
             effects.push(InteractionEffect::AddAutomation(kind));
-        }
-        Intent::ActivatePerformance(kind) => {
-            *next_mode = Some(InteractionMode::Performance(PerformanceMode::new(kind)));
         }
         Intent::OpenStateLeader(leader) => {
             *next_mode = Some(InteractionMode::Performance(PerformanceMode::States {
@@ -2282,11 +2220,6 @@ fn update_automation(
             effects.push(InteractionEffect::CloseAutomationAll);
             *next_mode = Some(InteractionMode::Browsing);
         }
-        Intent::ActivatePerformance(_) => {
-            *next_mode = Some(InteractionMode::Performance(PerformanceMode::Jump {
-                stage: JumpStage::AutomationRow { mode: *automation },
-            }));
-        }
         // `G` grabs the harmony, which an editor field cannot hold, so from
         // an editor both `g` and `G` grab the selected field.
         Intent::OpenGrab { .. } => {
@@ -2351,7 +2284,7 @@ fn update_automation(
             *next_mode = Some(InteractionMode::Palette(Box::new(PaletteMode {
                 recent: Vec::new(),
                 resume: Some(*automation),
-                planned_tab: Some(navigation.mute_target()),
+                scope_tab: Some(navigation.mute_target()),
                 ..PaletteMode::default()
             })));
         }
@@ -2423,9 +2356,6 @@ fn update_performance(
         Intent::Save => effects.push(InteractionEffect::Save),
         Intent::Quit => effects.push(InteractionEffect::Quit),
         _ => match performance {
-            PerformanceMode::Jump { stage } => {
-                update_jump(stage, navigation, layer_rows, intent, next_mode, effects);
-            }
             PerformanceMode::States { leader } => {
                 update_state_leader(*leader, navigation, layer_rows, intent, next_mode, effects);
             }
@@ -2524,74 +2454,6 @@ fn update_harmony(
         Intent::PushHarmony(action) => {
             effects.push(InteractionEffect::Harmony(action));
             if !latched {
-                *next_mode = Some(InteractionMode::Browsing);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// The Jump leader: `Space` plus a layer key restores that layer's cursor;
-/// a parameter key addresses the current layer, `m` plans a mute, and
-/// `1/2/4/8` grabs Motion. An editor-field grab returns to its editor; other
-/// completed routes return to browsing. Every route acts on a Press edge.
-fn update_jump(
-    stage: &mut JumpStage,
-    navigation: &mut Navigation,
-    layer_rows: &LayerRows,
-    intent: Intent,
-    next_mode: &mut Option<InteractionMode>,
-    effects: &mut Vec<InteractionEffect>,
-) {
-    match intent {
-        Intent::Cancel => {
-            *next_mode = Some(match *stage {
-                JumpStage::AutomationRow { mode } => InteractionMode::Automation(mode),
-                _ => InteractionMode::Browsing,
-            })
-        }
-        // Space while the leader is already pending leaves its stage alone.
-        Intent::ActivatePerformance(_) => {}
-        Intent::SelectPerformanceInstrument { instrument } => {
-            // Keep the selected target in the transient leader state until
-            // the transition applies Browsing. This preserves the closed
-            // grammar's typed representation without making a layer jump
-            // wait for another key.
-            *stage = JumpStage::ChooseParameter { instrument };
-            let page = instrument.page();
-            *navigation = layer_rows.open(page);
-            effects.push(InteractionEffect::SelectPage(page));
-            *next_mode = Some(InteractionMode::Browsing);
-        }
-        Intent::JumpToParameter(parameter) => {
-            let tab = match *stage {
-                // No layer key: the page already open is the layer, so
-                // `Space k` reaches the filter on whatever is in front of
-                // you, on any page rather than only the four layer keys.
-                JumpStage::ChooseLayer | JumpStage::AutomationRow { .. } => navigation.tab(),
-                JumpStage::ChooseParameter { instrument } => instrument.tab(),
-            };
-            let Some(effect) = jump_effect(tab, parameter) else {
-                // No address to move to. Stay in the leader rather than
-                // dropping the player somewhere they did not ask for.
-                return;
-            };
-            effects.push(effect);
-            *next_mode = Some(InteractionMode::Browsing);
-        }
-        Intent::PlanMute => {
-            effects.push(InteractionEffect::PlanMute(navigation.mute_target()));
-            *next_mode = Some(InteractionMode::Browsing);
-        }
-        Intent::GrabMotion(duration) => {
-            if let JumpStage::AutomationRow { mode } = *stage {
-                effects.push(InteractionEffect::MotionGrabAutomationSelected {
-                    duration,
-                    selected: mode.selected(),
-                });
-                *next_mode = Some(InteractionMode::Automation(mode));
-            } else {
-                effects.push(InteractionEffect::MotionGrabSelected(duration));
                 *next_mode = Some(InteractionMode::Browsing);
             }
         }
@@ -2746,9 +2608,6 @@ fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionE
             recipe,
             target: palette.recipe_target,
         },
-        Operation::PlannedMute => {
-            InteractionEffect::PlanMute(palette.planned_tab.unwrap_or(Tab::Master))
-        }
         Operation::ToggleAuto => InteractionEffect::ToggleAuto,
         Operation::ToggleVamp => InteractionEffect::ToggleVamp,
         Operation::ToggleKickBass => InteractionEffect::ToggleKickBass,
@@ -2757,7 +2616,7 @@ fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionE
         Operation::Harmony(action) => InteractionEffect::Harmony(action),
         Operation::HarmonyQuantize(quantize) => InteractionEffect::SetHarmonyQuantize(quantize),
         Operation::ClearSequence => {
-            InteractionEffect::ClearSequence(palette.planned_tab.unwrap_or(Tab::Chords))
+            InteractionEffect::ClearSequence(palette.scope_tab.unwrap_or(Tab::Chords))
         }
     }
 }
@@ -2880,8 +2739,8 @@ mod tests {
                 InteractionMode::Browsing,
             ),
             (
-                InteractionMode::Performance(PerformanceMode::Jump {
-                    stage: JumpStage::ChooseLayer,
+                InteractionMode::Performance(PerformanceMode::Grab {
+                    target: GrabTarget::Knob,
                 }),
                 InteractionMode::Browsing,
             ),
@@ -3286,36 +3145,12 @@ mod tests {
     }
 
     #[test]
-    fn leader_mute_arms_the_visible_layer_and_returns_to_browsing() {
-        let model = InteractionModel {
-            navigation: Navigation::Hub {
-                selected: Page::Kick as usize,
-            },
-            mode: InteractionMode::Performance(PerformanceMode::Jump {
-                stage: JumpStage::ChooseLayer,
-            }),
-            ..InteractionModel::default()
-        };
-
-        let transition = update(model, Intent::PlanMute);
-
-        assert_eq!(transition.model.mode, InteractionMode::Browsing);
-        assert_eq!(
-            transition.effects,
-            vec![InteractionEffect::PlanMute(Tab::Kick)]
+    fn grab_targets_the_visible_knob_and_returns_to_browsing() {
+        let opened = update(
+            InteractionModel::default(),
+            Intent::OpenGrab { harmony: false },
         );
-    }
-
-    #[test]
-    fn leader_motion_grab_targets_the_visible_knob_and_returns_to_browsing() {
-        let model = InteractionModel {
-            mode: InteractionMode::Performance(PerformanceMode::Jump {
-                stage: JumpStage::ChooseLayer,
-            }),
-            ..InteractionModel::default()
-        };
-
-        let transition = update(model, Intent::GrabMotion(MotionDuration::Beats8));
+        let transition = update(opened.model, Intent::GrabMotion(MotionDuration::Beats8));
 
         assert_eq!(transition.model.mode, InteractionMode::Browsing);
         assert_eq!(
@@ -3327,7 +3162,7 @@ mod tests {
     }
 
     #[test]
-    fn leader_motion_from_lfo_editor_keeps_the_step_row_selected() {
+    fn grab_from_an_lfo_editor_keeps_the_step_row_selected() {
         let editor = AutomationMode::Lfo {
             depth: LfoDepth::Editor,
             selected: 7,
@@ -3336,11 +3171,11 @@ mod tests {
             mode: InteractionMode::Automation(editor),
             ..InteractionModel::default()
         };
-        let opened = update(model, Intent::ActivatePerformance(PerformanceKind::Jump));
+        let opened = update(model, Intent::OpenGrab { harmony: true });
         assert_eq!(
             opened.model.mode,
-            InteractionMode::Performance(PerformanceMode::Jump {
-                stage: JumpStage::AutomationRow { mode: editor },
+            InteractionMode::Performance(PerformanceMode::Grab {
+                target: GrabTarget::Field(editor),
             })
         );
         let grabbed = update(opened.model, Intent::GrabMotion(MotionDuration::Beats4));
@@ -3429,12 +3264,11 @@ mod tests {
             Intent::OpenPalette,
             Intent::OpenAutomation(AutomationKind::Lfo),
             Intent::OpenAutomationField,
-            Intent::ActivatePerformance(PerformanceKind::Jump),
+            Intent::OpenGrab { harmony: false },
             Intent::SelectPerformanceInstrument {
                 instrument: PerformanceInstrument::Pads,
             },
             Intent::JumpToParameter(PerformanceParameter::Volume),
-            Intent::PlanMute,
             Intent::GrabMotion(MotionDuration::Beats4),
             Intent::Save,
             Intent::Quit,
@@ -3454,7 +3288,7 @@ mod tests {
         for phase in [InputPhase::Repeat, InputPhase::Release] {
             let action = SemanticAction {
                 phase,
-                intent: Intent::ActivatePerformance(PerformanceKind::Jump),
+                intent: Intent::OpenGrab { harmony: false },
             };
             assert_eq!(
                 InteractionModel::default().update(action).model.mode,
@@ -3524,25 +3358,19 @@ mod tests {
         );
     }
 
-    /// The leader owns no physical hold, so leaving it is a plain mode
-    /// change with nothing to hand back.
+    /// A leader owns no physical hold, so leaving it is a plain mode change
+    /// with nothing to hand back.
     #[test]
     fn cancel_leaves_the_leader_without_emitting_effects() {
-        let aimed = update(
-            update(
-                InteractionModel::default(),
-                Intent::ActivatePerformance(PerformanceKind::Jump),
-            )
-            .model,
-            Intent::SelectPerformanceInstrument {
-                instrument: PerformanceInstrument::Perc,
-            },
-        )
-        .model;
-
-        let cancelled = update(aimed, Intent::Cancel);
-        assert!(cancelled.effects.is_empty());
-        assert_eq!(cancelled.model.mode, InteractionMode::Browsing);
+        for open in [
+            Intent::OpenGrab { harmony: false },
+            Intent::OpenStateLeader(StateLeader::Go),
+        ] {
+            let opened = update(InteractionModel::default(), open).model;
+            let cancelled = update(opened, Intent::Cancel);
+            assert!(cancelled.effects.is_empty());
+            assert_eq!(cancelled.model.mode, InteractionMode::Browsing);
+        }
     }
 
     fn open_leader(leader: StateLeader) -> InteractionModel {
@@ -3558,11 +3386,11 @@ mod tests {
                 opened.model.mode,
                 InteractionMode::Performance(PerformanceMode::States { leader })
             );
-            // A second open, or a Jump open, leaves a pending leader alone.
+            // A second open, or a grab open, leaves a pending leader alone.
             for intent in [
                 Intent::OpenStateLeader(StateLeader::Store),
                 Intent::OpenStateLeader(StateLeader::Go),
-                Intent::ActivatePerformance(PerformanceKind::Jump),
+                Intent::OpenGrab { harmony: false },
             ] {
                 let again = update(opened.model.clone(), intent);
                 assert_eq!(again.model, opened.model);
@@ -3621,23 +3449,21 @@ mod tests {
     }
 
     #[test]
-    fn jump_routes_and_state_routes_do_not_cross() {
-        let jump = update(
+    fn grab_routes_and_state_routes_do_not_cross() {
+        let grab = update(
             InteractionModel::default(),
-            Intent::ActivatePerformance(PerformanceKind::Jump),
+            Intent::OpenGrab { harmony: false },
         )
         .model;
         for intent in [Intent::ChooseState(0), Intent::PreviousState] {
-            let result = update(jump.clone(), intent);
-            assert_eq!(result.model, jump);
+            let result = update(grab.clone(), intent);
+            assert_eq!(result.model, grab);
             assert!(result.effects.is_empty());
         }
-        for intent in [Intent::PlanMute, Intent::GrabMotion(MotionDuration::Beats4)] {
-            let leader = open_leader(StateLeader::Go);
-            let result = update(leader.clone(), intent);
-            assert_eq!(result.model, leader);
-            assert!(result.effects.is_empty());
-        }
+        let leader = open_leader(StateLeader::Go);
+        let result = update(leader.clone(), Intent::GrabMotion(MotionDuration::Beats4));
+        assert_eq!(result.model, leader);
+        assert!(result.effects.is_empty());
         // Layer and Level/Filter keys are go's alone: `"` ignores them.
         for intent in [
             Intent::JumpToParameter(PerformanceParameter::Volume),
@@ -3680,11 +3506,11 @@ mod tests {
         );
     }
 
-    /// Only the state leaders keep a physical hold running. Jump, the
+    /// Only the performance leaders keep a physical hold running. The
     /// palette and every other keyboard owner still quarantine it and emit
     /// `GestureReleaseAll`, so the exemption cannot leak.
     #[test]
-    fn only_the_state_leaders_preserve_physical_holds() {
+    fn only_the_performance_leaders_preserve_physical_holds() {
         let held = || {
             update(
                 InteractionModel::default(),
@@ -3693,7 +3519,6 @@ mod tests {
             .model
         };
         for intent in [
-            Intent::ActivatePerformance(PerformanceKind::Jump),
             Intent::OpenPalette,
             Intent::OpenHelp,
             Intent::EnterLeadPlay,
@@ -3739,13 +3564,12 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_performance_activation_is_idempotent() {
-        let kind = PerformanceKind::Jump;
+    fn a_second_grab_open_is_idempotent() {
         let first = update(
             InteractionModel::default(),
-            Intent::ActivatePerformance(kind),
+            Intent::OpenGrab { harmony: false },
         );
-        let second = update(first.model.clone(), Intent::ActivatePerformance(kind));
+        let second = update(first.model.clone(), Intent::OpenGrab { harmony: true });
         assert_eq!(second.model, first.model);
         assert!(second.effects.is_empty());
     }
@@ -3759,7 +3583,7 @@ mod tests {
             ),
             (
                 InteractionMode::Numeric(NumericEntry::default()),
-                Intent::ActivatePerformance(PerformanceKind::Jump),
+                Intent::OpenGrab { harmony: false },
             ),
             (
                 InteractionMode::Palette(Box::default()),
@@ -3770,8 +3594,8 @@ mod tests {
                 Intent::OpenAutomation(AutomationKind::Lfo),
             ),
             (
-                InteractionMode::Performance(PerformanceMode::Jump {
-                    stage: JumpStage::ChooseLayer,
+                InteractionMode::Performance(PerformanceMode::Grab {
+                    target: GrabTarget::Knob,
                 }),
                 Intent::OpenAutomation(AutomationKind::Lfo),
             ),
@@ -3939,7 +3763,7 @@ mod tests {
     fn choosing_a_layer_opens_its_page_and_returns_to_browsing() {
         let model = update(
             InteractionModel::default(),
-            Intent::ActivatePerformance(PerformanceKind::Jump),
+            Intent::OpenStateLeader(StateLeader::Go),
         )
         .model;
         let transition = update(
@@ -3967,7 +3791,7 @@ mod tests {
     fn performance_instruments_are_a_closed_four_choice_grammar() {
         let leader = update(
             InteractionModel::default(),
-            Intent::ActivatePerformance(PerformanceKind::Jump),
+            Intent::OpenStateLeader(StateLeader::Go),
         )
         .model;
         for instrument in PerformanceInstrument::ALL {
@@ -3986,7 +3810,7 @@ mod tests {
             let arrived = update(
                 update(
                     InteractionModel::default(),
-                    Intent::ActivatePerformance(PerformanceKind::Jump),
+                    Intent::OpenStateLeader(StateLeader::Go),
                 )
                 .model,
                 Intent::SelectPerformanceInstrument { instrument },
@@ -4009,7 +3833,7 @@ mod tests {
                 navigation: Navigation::for_page(page_for_tab(tab)),
                 ..InteractionModel::default()
             };
-            let leader = update(browsing, Intent::ActivatePerformance(PerformanceKind::Jump)).model;
+            let leader = update(browsing, Intent::OpenStateLeader(StateLeader::Go)).model;
             let arrived = update(
                 leader,
                 Intent::JumpToParameter(PerformanceParameter::Volume),

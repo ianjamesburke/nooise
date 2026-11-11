@@ -215,7 +215,6 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         ModeSurface::Performance(PerformanceSurface::Grab { harmony }) => {
             draw_grab_leader(f, inner, *harmony);
         }
-        ModeSurface::Performance(surface) => draw_leader(f, inner, surface),
         _ => {}
     }
 }
@@ -496,7 +495,7 @@ fn draw_breadcrumb(f: &mut Frame, area: Rect, view: &UiViewModel<'_>) {
 
 /// The control list: one row per control, each followed by whatever
 /// modulation it carries — an open editor's fields, the live lanes, a closed
-/// modulation chip. The Space map overlays this area while its leader is open.
+/// modulation chip. A performance leader's map overlays this area while open.
 fn draw_control_rows(f: &mut Frame, area: Rect, frame: &PanelFrame<'_, '_>) {
     let view = frame.view;
     let items = &view.items;
@@ -1245,13 +1244,18 @@ fn draw_help(f: &mut Frame, inner: Rect) {
     let rule_style = Style::default().fg(Color::Rgb(60, 66, 84));
     let rule: String = "\u{2500}".repeat(inner_block.width as usize);
 
-    // The leader's layer keys are spelled out here rather than restated,
-    // so the map and `INSTRUMENTS` cannot drift apart.
-    let jump_layer_names: Vec<(String, String)> = crate::fluid::interaction::INSTRUMENTS
+    // Go's layer keys are spelled out here rather than restated, so the map
+    // and `INSTRUMENTS` cannot drift apart.
+    let go_layer_names: Vec<(String, String)> = crate::fluid::interaction::INSTRUMENTS
         .iter()
-        .map(|row| (row.key.to_string(), row.instrument.name().to_lowercase()))
+        .map(|row| {
+            (
+                format!("' {}", row.key),
+                row.instrument.name().to_lowercase(),
+            )
+        })
         .collect();
-    let jump_layers: Vec<(&str, &str)> = jump_layer_names
+    let go_layers: Vec<(&str, &str)> = go_layer_names
         .iter()
         .map(|(key, name)| (key.as_str(), name.as_str()))
         .collect();
@@ -1365,20 +1369,6 @@ fn draw_help(f: &mut Frame, inner: Rect) {
         ],
     ));
     lines.extend(state(
-        "Jump (Space, then one key)",
-        &[
-            &jump_layers[..4],
-            &jump_layers[4..],
-            &[
-                ("j", "volume"),
-                ("k", "filter"),
-                ("m", "mute next bar"),
-                ("Space j/k", "this page"),
-                ("Space 1/2/4/8", "grab 1/2/4/8 bars"),
-            ],
-        ],
-    ));
-    lines.extend(state(
         "Grab (then 1 / 2 / 4 / 8 bars)",
         &[&[
             ("g", "knob or editor field motion"),
@@ -1389,11 +1379,9 @@ fn draw_help(f: &mut Frame, inner: Rect) {
         "Go (') and keep (\")",
         &[
             &[("' 1-9", "queue state"), ("' '", "previous state")],
-            &[
-                ("' a s d f", "pads perc bass kick"),
-                ("' q w e r", "tonal clap arp hub"),
-            ],
-            &[("' j / ' k", "level / filter here")],
+            &go_layers[..4],
+            &go_layers[4..],
+            &[("' j / ' k", "volume / filter here")],
             &[
                 ("\" 1-9", "store here (replaces)"),
                 ("' same", "cancel queue"),
@@ -1595,8 +1583,8 @@ fn draw_state_leader(f: &mut Frame, inner: Rect, view: &UiViewModel<'_>, leader:
                 lines.push(keyed(&pairs));
             }
             lines.push(keyed(&[
-                (PARAMETERS[0].key.to_string(), "level"),
-                (PARAMETERS[1].key.to_string(), "filter"),
+                (PARAMETERS[0].key.to_string(), PARAMETERS[0].label),
+                (PARAMETERS[1].key.to_string(), PARAMETERS[1].label),
                 ("'".to_string(), "previous"),
                 ("Esc".to_string(), ""),
             ]));
@@ -1612,72 +1600,6 @@ fn draw_state_leader(f: &mut Frame, inner: Rect, view: &UiViewModel<'_>, leader:
             ]));
         }
     }
-    f.render_widget(Paragraph::new(lines).alignment(Alignment::Left), content);
-}
-
-/// The immediate Space map is a compact, centered menu with a dedicated
-/// cancel row. It leaves the footer visible at every terminal size.
-fn draw_leader(f: &mut Frame, inner: Rect, surface: &PerformanceSurface) {
-    let content = leader_frame(f, inner, " Jump ", 8);
-    let key_style = Style::default()
-        .fg(BROWSE_PALETTE.active)
-        .add_modifier(Modifier::BOLD);
-    let label_style = Style::default().fg(Color::Rgb(205, 210, 222));
-    let pair = |left_key: char, left_label: &str, right_key: char, right_label: &str| {
-        Line::from(vec![
-            Span::styled(format!("{left_key:<2}"), key_style),
-            Span::styled(format!("{left_label:<11}"), label_style),
-            Span::styled(format!("{right_key:<2}"), key_style),
-            Span::styled(right_label.to_string(), label_style),
-        ])
-    };
-    let single = |key: &str, label: &str| {
-        Line::from(vec![
-            Span::styled(format!("{key:<5}"), key_style),
-            Span::styled(label.to_string(), label_style),
-        ])
-    };
-    let lines = match surface {
-        PerformanceSurface::ChooseLayer => {
-            let mut lines: Vec<_> = INSTRUMENTS[..4]
-                .iter()
-                .zip(&INSTRUMENTS[4..])
-                .map(|(left, right)| {
-                    pair(
-                        left.key,
-                        left.instrument.name(),
-                        right.key,
-                        right.instrument.name(),
-                    )
-                })
-                .collect();
-            lines.push(Line::from(vec![
-                Span::styled(format!("{} ", PARAMETERS[0].key), key_style),
-                Span::styled("Vol  ", label_style),
-                Span::styled(format!("{} ", PARAMETERS[1].key), key_style),
-                Span::styled("Filter ", label_style),
-                Span::styled("m ", key_style),
-                Span::styled("Mute ", label_style),
-                Span::styled("1/2/4/8 ", key_style),
-                Span::styled("Grab", label_style),
-            ]));
-            lines.push(single("Esc", "Cancel"));
-            lines
-        }
-        PerformanceSurface::States { .. }
-        | PerformanceSurface::Harmony { .. }
-        | PerformanceSurface::Grab { .. } => {
-            unreachable!("state and harmony leaders render through their own overlays")
-        }
-        PerformanceSurface::ChooseParameter { instrument } => vec![
-            Line::from(Span::styled(instrument.name().to_string(), label_style)),
-            single(&PARAMETERS[0].key.to_string(), PARAMETERS[0].label),
-            single(&PARAMETERS[1].key.to_string(), PARAMETERS[1].label),
-            single("m", "Mute next bar"),
-            single("1/2/4/8", " Grab 1/2/4/8 bars"),
-            single("Esc", "Cancel"),
-        ],
-    };
     f.render_widget(Paragraph::new(lines).alignment(Alignment::Left), content);
 }
 

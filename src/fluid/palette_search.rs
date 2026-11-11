@@ -478,10 +478,10 @@ mod tests {
         }
         assert_eq!(winner(&entries, Tab::Lead, ADVERSE, "glide"), before);
         // Description-only words never enter the search metadata at all.
-        let operation = PaletteEntry::Operation(Operation::PlannedMute);
-        assert!(operation.display_text().contains("visible"));
+        let operation = PaletteEntry::Operation(Operation::ClearSequence);
+        assert!(operation.display_text().contains("root"));
         assert!(
-            Query::new("visible")
+            Query::new("root")
                 .rank(&SearchMetadata::for_entry(&operation), Tab::Master, &[])
                 .is_none()
         );

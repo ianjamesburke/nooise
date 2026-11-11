@@ -23,8 +23,7 @@ use ratatui::backend::CrosstermBackend;
 
 use super::interaction::{
     AutomationKind, InputPhase, Intent, InteractionMode, LEAD_PLAY_KEYS, LeadNudge, PageDirection,
-    PerformanceInstrument, PerformanceKind, PerformanceMode, PerformanceParameter, SemanticAction,
-    StateLeader,
+    PerformanceInstrument, PerformanceMode, PerformanceParameter, SemanticAction, StateLeader,
 };
 use super::{GestureKind, HoldMute};
 
@@ -570,7 +569,6 @@ pub(crate) fn map_input(
         InteractionMode::Performance(performance) => {
             if unmodified {
                 match performance {
-                    PerformanceMode::Jump { .. } => performance_binding(&key.code),
                     PerformanceMode::States { .. } => state_leader_binding(&key.code),
                     PerformanceMode::Harmony { .. } => harmony_binding(&key.code),
                     PerformanceMode::Grab { .. } => grab_binding(&key.code),
@@ -641,7 +639,6 @@ fn browsing_binding(code: &PhysicalKey) -> Option<Intent> {
         // glyph some terminals send) grabs the pushed harmony.
         PhysicalKey::Character('g') => Intent::OpenGrab { harmony: false },
         PhysicalKey::Character('G') => Intent::OpenGrab { harmony: true },
-        PhysicalKey::Character(' ') => Intent::ActivatePerformance(PerformanceKind::Jump),
         PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
         PhysicalKey::Enter => Intent::TouchSelected,
         _ => return slider_binding(code),
@@ -652,7 +649,6 @@ fn automation_binding(code: &PhysicalKey) -> Option<Intent> {
     match *code {
         // Enter stays inert while an automation editor owns the keyboard.
         PhysicalKey::Enter => None,
-        PhysicalKey::Character(' ') => Some(Intent::ActivatePerformance(PerformanceKind::Jump)),
         // PhysicalKey::Character('e') => Some(Intent::OpenAutomation(AutomationKind::Envelope)),
         PhysicalKey::Character('r' | 'u') => Some(Intent::RandomizeAutomationRow),
         PhysicalKey::Character('g') => Some(Intent::OpenGrab { harmony: false }),
@@ -782,43 +778,13 @@ fn harmony_binding(code: &PhysicalKey) -> Option<Intent> {
     Some(Intent::PushHarmony(action))
 }
 
-/// The Jump leader's keyboard: Space re-arms it, `INSTRUMENTS` keys open a
-/// layer, `PARAMETERS` keys address the page already open, `m` plans a mute,
-/// and `1/2/4/8` grabs Motion. Every route uses Press, without a capability
-/// branch. The key sets are disjoint and retain their meanings at every
-/// stage, so the binding does not read the mode.
-fn performance_binding(code: &PhysicalKey) -> Option<Intent> {
-    if let PhysicalKey::Character(' ') = *code {
-        return Some(Intent::ActivatePerformance(PerformanceKind::Jump));
-    }
-    let PhysicalKey::Character(key) = *code else {
-        return None;
-    };
-    // A layer key completes the page jump; a parameter key completes the
-    // current-page address.
-    PerformanceParameter::from_key(key)
-        .map(Intent::JumpToParameter)
-        .or_else(|| (key == 'm').then_some(Intent::PlanMute))
-        .or(match key {
-            '1' => Some(Intent::GrabMotion(super::MotionDuration::Beats4)),
-            '2' => Some(Intent::GrabMotion(super::MotionDuration::Beats8)),
-            '4' => Some(Intent::GrabMotion(super::MotionDuration::Beats16)),
-            '8' => Some(Intent::GrabMotion(super::MotionDuration::Beats32)),
-            _ => None,
-        })
-        .or_else(|| {
-            PerformanceInstrument::from_key(key)
-                .map(|instrument| Intent::SelectPerformanceInstrument { instrument })
-        })
-}
-
 #[cfg(test)]
 mod motion_leader_tests {
     use super::*;
     use crate::fluid::MotionDuration;
 
     #[test]
-    fn leader_number_keys_map_to_the_matching_motion_duration() {
+    fn grab_number_keys_map_to_the_matching_motion_duration() {
         for (key, duration) in [
             ('1', MotionDuration::Beats4),
             ('2', MotionDuration::Beats8),
@@ -826,9 +792,12 @@ mod motion_leader_tests {
             ('8', MotionDuration::Beats32),
         ] {
             assert_eq!(
-                performance_binding(&PhysicalKey::Character(key)),
+                grab_binding(&PhysicalKey::Character(key)),
                 Some(Intent::GrabMotion(duration))
             );
+        }
+        for inert in ['3', '0', 'a', ' '] {
+            assert_eq!(grab_binding(&PhysicalKey::Character(inert)), None);
         }
     }
 }
@@ -1953,12 +1922,12 @@ mod tests {
                 );
             }
         }
-        // The Jump leader neither opens a state leader nor reads them.
-        let jump = InteractionMode::Performance(PerformanceMode::Jump {
-            stage: crate::fluid::interaction::JumpStage::ChooseLayer,
+        // The grab leader neither opens a state leader nor reads them.
+        let grab = InteractionMode::Performance(PerformanceMode::Grab {
+            target: crate::fluid::interaction::GrabTarget::Knob,
         });
         assert_eq!(
-            state_map(&jump, '\'', Modifiers::default(), capabilities),
+            state_map(&grab, '\'', Modifiers::default(), capabilities),
             InputMapping::Ignored
         );
     }
@@ -2004,15 +1973,16 @@ mod tests {
 
     #[test]
     fn canonical_mapper_defers_layer_key_phase_to_the_kernel() {
-        let model =
-            InteractionMode::Performance(crate::fluid::interaction::PerformanceMode::Jump {
-                stage: crate::fluid::interaction::JumpStage::ChooseLayer,
-            });
+        let model = InteractionMode::Performance(PerformanceMode::States {
+            leader: StateLeader::Go,
+        });
         // The leader reads a layer key the same way at every phase; which
         // phases act is `Intent::phase_policy`'s call, made once for every
         // intent rather than restated per binding.
+        // `s` rather than `a`: an `a` key-up inside a hold-keeping leader is
+        // the Vamp's release.
         let intent = Intent::SelectPerformanceInstrument {
-            instrument: PerformanceInstrument::Pads,
+            instrument: PerformanceInstrument::Perc,
         };
         assert_eq!(
             intent.phase_policy(),
@@ -2025,7 +1995,7 @@ mod tests {
             .zip(expected)
         {
             let event =
-                TransportEvent::key(PhysicalKey::Character('a'), Modifiers::default(), phase);
+                TransportEvent::key(PhysicalKey::Character('s'), Modifiers::default(), phase);
             assert_eq!(
                 map_input(&model, &event, TerminalCapabilities::full()),
                 expected
@@ -2162,15 +2132,13 @@ mod tests {
             ),
             semantic(InputPhase::Press, Intent::ToggleKickBass),
         );
-        let code = PhysicalKey::Character(' ');
-        let kind = PerformanceKind::Jump;
         assert_eq!(
             map_input(
                 &browsing,
-                &event(code, Modifiers::default()),
+                &event(PhysicalKey::Character('g'), Modifiers::default()),
                 TerminalCapabilities::default()
             ),
-            InputMapping::Action(SemanticAction::press(Intent::ActivatePerformance(kind)))
+            InputMapping::Action(SemanticAction::press(Intent::OpenGrab { harmony: false }))
         );
         assert_eq!(
             map_input(

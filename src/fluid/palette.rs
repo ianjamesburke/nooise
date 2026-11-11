@@ -137,7 +137,6 @@ impl PaletteEntry {
                 Operation::Motion(_) => "selected knob".to_string(),
                 Operation::Mix(_) => operation.spec().description.to_string(),
                 Operation::Recipe(_) => "add lane".to_string(),
-                Operation::PlannedMute => "visible layer".to_string(),
                 Operation::Chord(_) => "selected chord".to_string(),
                 Operation::ToggleAuto => "auto morph".to_string(),
                 Operation::ToggleVamp => "chord vamp".to_string(),

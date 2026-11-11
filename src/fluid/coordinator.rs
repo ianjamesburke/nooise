@@ -589,9 +589,6 @@ pub(crate) fn apply_osc_ui_command(
         OscUiCommand::MuteToggle(tab) => {
             context.effects.toggle_mute(tab);
         }
-        OscUiCommand::MutePlan(tab) => {
-            let _ = context.effects.plan_mute(tab, context.beat);
-        }
         OscUiCommand::Transport(OscTransportCmd::Play) => {
             context.effects.start_transport();
         }
@@ -867,20 +864,10 @@ pub(crate) fn production_ui_loop(
             let gesture_now_seconds = effects.session().audio_seconds();
             let beat = telemetry.beat();
             let active_chord = telemetry.chord_slot.load(Ordering::Relaxed);
-            let pending_message = frame_session
-                .planned
-                .map(|action| {
-                    format!(
-                        "\u{25cb} {} mute lands on the next bar",
-                        action.tab().name()
-                    )
-                })
-                .or_else(|| {
-                    effects.pending().map(|(_, edits)| {
-                        let plural = if edits.len() == 1 { "" } else { "s" };
-                        format!("\u{25cb} {} edit{plural} land on the next bar", edits.len())
-                    })
-                });
+            let pending_message = effects.pending().map(|(_, edits)| {
+                let plural = if edits.len() == 1 { "" } else { "s" };
+                format!("\u{25cb} {} edit{plural} land on the next bar", edits.len())
+            });
             let auto_pos = effects.auto_position(beat);
             let auto_message = auto_pos.map(|position| {
                 let name =

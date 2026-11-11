@@ -22,9 +22,8 @@ use super::coordinator::{
 use super::effect::{Clipboard, ClipboardError, EffectAcknowledgement};
 use super::interaction::{
     AutomationKind, AutomationMode, ChordDrill, InputPhase, Intent, InteractionMode,
-    InteractionModel, JumpStage, LeadDrill, LeadPlay, Navigation, NumericEntry, PaletteMode,
-    PaletteStagedEdit, PerformanceInstrument, PerformanceKind, PerformanceMode, PhasePolicy,
-    SemanticAction,
+    InteractionModel, LeadDrill, LeadPlay, Navigation, NumericEntry, PaletteMode,
+    PaletteStagedEdit, PerformanceInstrument, PerformanceMode, PhasePolicy, SemanticAction,
 };
 use super::runtime::{
     Clock, EventSource, FakeClock, InputMapping, MAX_FRAME_GAP, Modifiers, PhysicalKey,
@@ -529,7 +528,6 @@ impl Clipboard for FakeClipboard {
         let authored = SongState {
             controls: saved.controls,
             muted: saved.muted,
-            planned: saved.planned,
             vamp: saved.vamp,
             kick_bass_latched: saved.kick_bass_latched,
             automation: saved.automation,
@@ -1492,12 +1490,12 @@ fn regression_traces_cross_the_complete_ui_pipeline() {
             "BROWSE",
         ),
         (
-            "double Space",
+            "double g",
             vec![
-                key(0, FixtureKey::Character(' '), InputPhase::Press),
-                key(0, FixtureKey::Character(' '), InputPhase::Press),
+                key(0, FixtureKey::Character('g'), InputPhase::Press),
+                key(0, FixtureKey::Character('g'), InputPhase::Press),
             ],
-            "JUMP",
+            "GRAB",
         ),
         (
             "sustained entry key",
@@ -1535,7 +1533,7 @@ fn regression_traces_cross_the_complete_ui_pipeline() {
         (
             "Escape recovery",
             vec![
-                key(0, FixtureKey::Character(' '), InputPhase::Press),
+                key(0, FixtureKey::Character('\''), InputPhase::Press),
                 key(0, FixtureKey::Character('a'), InputPhase::Press),
                 key(0, FixtureKey::Character('s'), InputPhase::Press),
                 key(0, FixtureKey::Escape, InputPhase::Press),
@@ -2161,9 +2159,8 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
             "{name}"
         );
     }
-    let name = "jump leader entry";
-    let code = FixtureKey::Character(' ');
-    let kind = PerformanceKind::Jump;
+    let name = "grab leader entry";
+    let code = FixtureKey::Character('g');
     let result = replay(&[plain(code)], TerminalCapabilities::full());
     assert!(
         matches!(result.model.mode, InteractionMode::Performance(_)),
@@ -2174,7 +2171,7 @@ fn production_binding_matrix_crosses_the_complete_pipeline() {
             .state_history
             .last()
             .map(|record| record.action.intent),
-        Some(Intent::ActivatePerformance(kind)),
+        Some(Intent::OpenGrab { harmony: false }),
         "{name}"
     );
     assert_eq!(result.session_generation, 0, "{name}");
@@ -2423,7 +2420,7 @@ fn control_quit_reaches_the_lead_and_performance_owners() {
     assert_eq!(lead.final_owner(), Some("LEAD"));
     assert_eq!(lead.effect_count("Quit"), 1);
     let jump = replay(
-        &[plain(FixtureKey::Character(' ')), quit],
+        &[plain(FixtureKey::Character('g')), quit],
         TerminalCapabilities::full(),
     );
     assert_eq!(jump.effect_count("Quit"), 1);
@@ -2913,7 +2910,7 @@ fn motion_four_and_eight_bar_leaders_keep_base_edits_phase_and_lifecycle() {
                     width: MIN_TERMINAL_WIDTH,
                     height: MIN_TERMINAL_HEIGHT,
                 },
-                press(FixtureKey::Character(' ')),
+                press(FixtureKey::Character('g')),
                 TraceEvent::Idle { after_ms: 40 },
                 press(FixtureKey::Character(key_char)),
                 TraceEvent::Idle { after_ms: 40 },
@@ -2924,7 +2921,7 @@ fn motion_four_and_eight_bar_leaders_keep_base_edits_phase_and_lifecycle() {
                 grabbed
                     .frames
                     .iter()
-                    .any(|frame| frame.text.contains("1/2/4/8 Grab")),
+                    .any(|frame| frame.text.contains("1 bar  2 bars")),
                 "{:?}",
                 grabbed.frames
             );
@@ -3024,7 +3021,7 @@ fn motion_choices_and_editor_fields_show_their_distinct_manual_edit_policy() {
             events.extend([
                 press(FixtureKey::Right),
                 TraceEvent::Idle { after_ms: 4_000 },
-                press(FixtureKey::Character(' ')),
+                press(FixtureKey::Character('g')),
                 press(FixtureKey::Character('8')),
                 TraceEvent::Idle { after_ms: 40 },
                 save(),
@@ -3555,7 +3552,7 @@ fn palette_filter_insertion_focuses_dry_amount_and_reuses_the_slot() {
 fn jump_filter_on_a_new_layer_opens_cutoff_then_reaches_amount() {
     let mut events = vec![key(0, FixtureKey::Tab, InputPhase::Press)];
     events.extend([
-        key(0, FixtureKey::Character(' '), InputPhase::Press),
+        key(0, FixtureKey::Character('\''), InputPhase::Press),
         key(0, FixtureKey::Character('k'), InputPhase::Press),
     ]);
     let opened = replay(&events, TerminalCapabilities::full());
@@ -4045,22 +4042,22 @@ fn clock_stop_toggles_on_press_in_every_terminal_and_marks_the_activity_row() {
 }
 
 #[test]
-fn performance_leader_is_capability_independent_and_idempotent() {
+fn grab_leader_is_capability_independent_and_idempotent() {
     for capabilities in [
         TerminalCapabilities::full(),
         TerminalCapabilities::default(),
     ] {
         let leaders = vec![
             key(0, FixtureKey::Escape, InputPhase::Press),
-            key(0, FixtureKey::Character(' '), InputPhase::Press),
-            key(0, FixtureKey::Character(' '), InputPhase::Repeat),
-            key(0, FixtureKey::Character(' '), InputPhase::Press),
+            key(0, FixtureKey::Character('g'), InputPhase::Press),
+            key(0, FixtureKey::Character('g'), InputPhase::Repeat),
+            key(0, FixtureKey::Character('g'), InputPhase::Press),
         ];
         let result = replay(&leaders, capabilities);
         assert!(matches!(
             result.model.mode,
-            InteractionMode::Performance(PerformanceMode::Jump {
-                stage: JumpStage::ChooseLayer,
+            InteractionMode::Performance(PerformanceMode::Grab {
+                target: super::interaction::GrabTarget::Knob,
             })
         ));
         assert!(result.deferred_inputs.is_empty());
@@ -4086,71 +4083,6 @@ fn performance_leader_is_capability_independent_and_idempotent() {
     );
     assert_eq!(save.effect_count("Save"), 1);
     assert_eq!(save.clipboard_writes, 1);
-}
-
-#[test]
-fn planned_mute_and_cancel_preserve_minimum_frame_navigation_on_both_terminals() {
-    for capabilities in [
-        TerminalCapabilities::full(),
-        TerminalCapabilities::default(),
-    ] {
-        let press = |code| key(0, code, InputPhase::Press);
-        let trace = vec![
-            TraceEvent::Resize {
-                after_ms: 0,
-                width: MIN_TERMINAL_WIDTH,
-                height: MIN_TERMINAL_HEIGHT,
-            },
-            press(FixtureKey::Character(' ')),
-            press(FixtureKey::Character('f')),
-            press(FixtureKey::Down),
-            press(FixtureKey::Character(' ')),
-            press(FixtureKey::Character('m')),
-            TraceEvent::Idle { after_ms: 40 },
-            press(FixtureKey::Character(' ')),
-            press(FixtureKey::Character('m')),
-            TraceEvent::Idle { after_ms: 40 },
-            press(FixtureKey::Character(' ')),
-            press(FixtureKey::Escape),
-            press(FixtureKey::Tab),
-            press(FixtureKey::Character(' ')),
-            press(FixtureKey::Character('f')),
-        ];
-        let result = replay(&trace, capabilities);
-        assert_eq!(result.effect_count("PlanMute(Kick)"), 2);
-        assert_eq!(result.effect_count("ToggleMute"), 0);
-        assert_eq!(result.session_generation, 2);
-        assert_eq!(result.final_owner(), Some("BROWSE"));
-        assert_eq!(
-            result.model.navigation,
-            Navigation::Kick {
-                selected: 1,
-                drill: super::interaction::KickDrill::None,
-            }
-        );
-        assert!(
-            result
-                .frames
-                .iter()
-                .any(|frame| frame.text.contains("next bar"))
-        );
-        assert!(
-            result
-                .frames
-                .iter()
-                .any(|frame| frame.text.contains("cancel"))
-        );
-        let final_frame = result.frames.last().expect("the replay renders a frame");
-        let breadcrumb = final_frame
-            .text
-            .lines()
-            .find(|line| line.contains("Master › Kick"))
-            .expect("the Kick breadcrumb remains visible");
-        assert!(!breadcrumb.contains("Kick m"));
-        assert!(!breadcrumb.contains("Kick (M)"));
-        assert!(result.deferred_inputs.is_empty());
-        assert_eq!(post_replay_violation(&result), None);
-    }
 }
 
 /// The hub is the way into every layer: Enter opens the highlighted one,
@@ -4216,7 +4148,7 @@ fn a_parameter_key_without_a_layer_aims_at_the_open_page() {
 
     let volume = replay(
         &on_bass(vec![
-            key(0, FixtureKey::Character(' '), InputPhase::Press),
+            key(0, FixtureKey::Character('\''), InputPhase::Press),
             key(0, FixtureKey::Character('j'), InputPhase::Press),
         ]),
         TerminalCapabilities::full(),
@@ -4226,7 +4158,7 @@ fn a_parameter_key_without_a_layer_aims_at_the_open_page() {
 
     let filter = replay(
         &on_bass(vec![
-            key(0, FixtureKey::Character(' '), InputPhase::Press),
+            key(0, FixtureKey::Character('\''), InputPhase::Press),
             key(0, FixtureKey::Character('k'), InputPhase::Press),
         ]),
         TerminalCapabilities::full(),
@@ -4250,7 +4182,7 @@ fn a_parameter_key_without_a_layer_aims_at_the_open_page() {
     // The app opens on the hub, whose own level is Master Level.
     let master = replay(
         &[
-            key(0, FixtureKey::Character(' '), InputPhase::Press),
+            key(0, FixtureKey::Character('\''), InputPhase::Press),
             key(0, FixtureKey::Character('j'), InputPhase::Press),
         ],
         TerminalCapabilities::full(),
@@ -4261,7 +4193,7 @@ fn a_parameter_key_without_a_layer_aims_at_the_open_page() {
     let lead = replay(
         &[
             key(0, FixtureKey::BackTab, InputPhase::Press),
-            key(0, FixtureKey::Character(' '), InputPhase::Press),
+            key(0, FixtureKey::Character('\''), InputPhase::Press),
             key(0, FixtureKey::Character('j'), InputPhase::Press),
         ],
         TerminalCapabilities::full(),
@@ -4274,7 +4206,7 @@ fn a_parameter_key_without_a_layer_aims_at_the_open_page() {
 fn a_layer_key_returns_to_browsing_without_a_parameter() {
     let result = replay(
         &[
-            key(0, FixtureKey::Character(' '), InputPhase::Press),
+            key(0, FixtureKey::Character('\''), InputPhase::Press),
             key(0, FixtureKey::Character('f'), InputPhase::Press),
         ],
         TerminalCapabilities::full(),
@@ -4293,7 +4225,7 @@ fn a_layer_key_returns_to_browsing_without_a_parameter() {
 fn leader_keys_ignore_repeat_and_release() {
     let result = replay(
         &[
-            key(0, FixtureKey::Character(' '), InputPhase::Press),
+            key(0, FixtureKey::Character('\''), InputPhase::Press),
             key(0, FixtureKey::Character('f'), InputPhase::Press),
             key(0, FixtureKey::Character('f'), InputPhase::Repeat),
             key(0, FixtureKey::Character('f'), InputPhase::Release),
@@ -4328,15 +4260,10 @@ fn every_decided_edge_binding_ignores_repeat_exactly_once() {
     );
     assert_eq!(palette.final_owner(), Some("PALETTE"));
     let leader = replay(
-        &repeated(FixtureKey::Character(' ')),
+        &repeated(FixtureKey::Character('g')),
         TerminalCapabilities::full(),
     );
-    assert!(matches!(
-        leader.model.mode,
-        InteractionMode::Performance(PerformanceMode::Jump {
-            stage: JumpStage::ChooseLayer,
-        })
-    ));
+    assert_eq!(leader.final_owner(), Some("GRAB"));
 
     let numeric = replay_from_model(
         InteractionModel {
@@ -4366,12 +4293,12 @@ fn every_decided_edge_binding_ignores_repeat_exactly_once() {
 
     let performance = replay_from_model(
         InteractionModel {
-            mode: InteractionMode::Performance(PerformanceMode::Jump {
-                stage: JumpStage::ChooseLayer,
+            mode: InteractionMode::Performance(PerformanceMode::States {
+                leader: super::interaction::StateLeader::Go,
             }),
             ..InteractionModel::default()
         },
-        &repeated(FixtureKey::Character('a')),
+        &repeated(FixtureKey::Character('s')),
         TerminalCapabilities::full(),
     );
     assert_eq!(performance.effect_count("SelectPage"), 1);
@@ -4413,7 +4340,7 @@ fn every_edge_policy_intent_is_a_no_op_on_repeat_and_release() {
         Intent::OpenPalette,
         Intent::OpenAutomation(AutomationKind::Lfo),
         Intent::OpenAutomationField,
-        Intent::ActivatePerformance(PerformanceKind::Jump),
+        Intent::OpenGrab { harmony: false },
         Intent::SelectPerformanceInstrument {
             instrument: PerformanceInstrument::Pads,
         },
@@ -4494,16 +4421,14 @@ fn escape_converges_from_every_owner_and_nested_depth() {
             ..InteractionModel::default()
         },
         InteractionModel {
-            mode: InteractionMode::Performance(PerformanceMode::Jump {
-                stage: JumpStage::ChooseLayer,
+            mode: InteractionMode::Performance(PerformanceMode::Grab {
+                target: super::interaction::GrabTarget::Knob,
             }),
             ..InteractionModel::default()
         },
         InteractionModel {
-            mode: InteractionMode::Performance(PerformanceMode::Jump {
-                stage: JumpStage::ChooseParameter {
-                    instrument: PerformanceInstrument::Kick,
-                },
+            mode: InteractionMode::Performance(PerformanceMode::States {
+                leader: super::interaction::StateLeader::Go,
             }),
             ..InteractionModel::default()
         },
@@ -5458,7 +5383,7 @@ fn top_row_holds_on_q_e_and_r_drive_kick_bass_mute_rise_and_perc_roll() {
             TraceEvent::Tick { after_ms: 500 },
             key(0, FixtureKey::Left, InputPhase::Press),
             TraceEvent::Tick { after_ms: 500 },
-            press(' '),
+            press('g'),
             press('1'),
             press('x'),
             ctrl_s,

@@ -11,7 +11,6 @@ pub(crate) enum Operation {
     Motion(MotionAction),
     Mix(mix_action::MixAction),
     Recipe(recipe::RecipeId),
-    PlannedMute,
     OutputDevice,
     Chord(ChordAction),
     ToggleAuto,
@@ -115,7 +114,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 65] = [
+    pub(crate) const ALL: [Self; 64] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -132,7 +131,6 @@ impl Operation {
         Self::Recipe(recipe::RecipeId::Drift),
         Self::Recipe(recipe::RecipeId::Rise),
         Self::Recipe(recipe::RecipeId::Rhythm),
-        Self::PlannedMute,
         Self::OutputDevice,
         Self::Chord(ChordAction::AddExtension),
         Self::Chord(ChordAction::Restore),
@@ -260,12 +258,6 @@ impl Operation {
                 label: "Output device",
                 aliases: &["output", "device", "audio output", "routing"],
                 description: "choose where live audio plays",
-            },
-            Self::PlannedMute => OperationSpec {
-                operation: self,
-                label: "Mute next bar",
-                aliases: &["planned mute", "mute next"],
-                description: "mute the visible layer at the next bar",
             },
             Self::ToggleAuto => OperationSpec {
                 operation: self,
@@ -403,7 +395,6 @@ impl Operation {
             },
             Self::Mix(_)
             | Self::Recipe(_)
-            | Self::PlannedMute
             | Self::OutputDevice
             | Self::Chord(_)
             | Self::ChordNames(_)

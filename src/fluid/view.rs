@@ -6,8 +6,8 @@
 use super::*;
 use crate::fluid::interaction::{
     ArpDrill, AutomationKind, AutomationMode, BassDrill, ChordDrill, ClapDrill, GrabTarget,
-    InteractionMode, InteractionModel, JumpStage, KickDrill, LEAD_NUDGES, LeadDrill, Navigation,
-    PercDrill, PerformanceInstrument, PerformanceMode, StateLeader, TonalDrill, hub_layer,
+    InteractionMode, InteractionModel, KickDrill, LEAD_NUDGES, LeadDrill, Navigation, PercDrill,
+    PerformanceMode, StateLeader, TonalDrill, hub_layer,
 };
 
 /// The minimum supported frame. Every top-level and nested owner must render
@@ -24,7 +24,6 @@ pub(crate) enum KeyboardOwner {
     Palette,
     Lfo,
     Envelope,
-    PerformanceJump,
     PerformanceStates,
     PerformanceHarmony,
     PerformanceGrab,
@@ -40,7 +39,6 @@ impl KeyboardOwner {
             Self::Palette => "PALETTE",
             Self::Lfo => AutomationKind::Lfo.label(),
             Self::Envelope => AutomationKind::Envelope.label(),
-            Self::PerformanceJump => "JUMP",
             Self::PerformanceStates => "STATES",
             Self::PerformanceHarmony => "HARMONY",
             Self::PerformanceGrab => "GRAB",
@@ -332,13 +330,9 @@ impl AutomationSurface<'_> {
     }
 }
 
-/// How far a pending Jump has got. The leader renders this as an immediate
-/// map over the control rows while keeping the stable footer visible.
+/// The pending performance leader. Each renders as a compact map over the
+/// control rows while keeping the stable footer visible.
 pub(crate) enum PerformanceSurface {
-    ChooseLayer,
-    ChooseParameter {
-        instrument: PerformanceInstrument,
-    },
     States {
         leader: StateLeader,
     },
@@ -445,11 +439,7 @@ impl<'a> UiViewModel<'a> {
                 Tab::Clap => clap_tab_controls(&session.controls, navigation.clap_drill),
                 Tab::Arp => arp_tab_controls(&session.controls, navigation.arp_drill),
                 Tab::Lead => lead_tab_controls(&session.controls, navigation.lead_drill),
-                Tab::Master => hub_controls(
-                    &session.controls,
-                    &session.muted,
-                    session.planned.map(PlannedAction::tab),
-                ),
+                Tab::Master => hub_controls(&session.controls, &session.muted),
             },
         };
         let mut navigation = navigation;
@@ -525,13 +515,7 @@ impl<'a> UiViewModel<'a> {
             .map_or(telemetry.active_chord as usize, |vamp| {
                 usize::from(vamp.slot)
             });
-        let breadcrumb = breadcrumb(
-            navigation,
-            &session.controls,
-            &session.muted,
-            session.planned.map(PlannedAction::tab),
-            active_slot,
-        );
+        let breadcrumb = breadcrumb(navigation, &session.controls, &session.muted, active_slot);
         let harmony = HarmonyView::project(session, active_slot);
 
         let chord_title = match navigation.chord_drill {
@@ -581,26 +565,20 @@ impl<'a> UiViewModel<'a> {
 /// The hub's rows: Master's controls, whose leading layer rows each name
 /// their layer, carry its mute marker, and end in the `›` every row that
 /// opens a deeper page shows.
-fn hub_controls(
-    controls: &FluidControls,
-    muted: &MuteState,
-    planned: Option<Tab>,
-) -> Vec<ControlItem> {
+fn hub_controls(controls: &FluidControls, muted: &MuteState) -> Vec<ControlItem> {
     let mut items = tab_controls(Tab::Master, controls);
     for (row, item) in items.iter_mut().enumerate() {
         if let Some(tab) = hub_layer(row) {
-            item.label = format!("{} ›", crumb(tab, muted, planned));
+            item.label = format!("{} ›", crumb(tab, muted));
         }
     }
     items
 }
 
 /// A page's name as the breadcrumb and hub rows show it, marked when muted.
-fn crumb(tab: Tab, muted: &MuteState, planned: Option<Tab>) -> String {
+fn crumb(tab: Tab, muted: &MuteState) -> String {
     if muted[tab as usize] {
         format!("{} (M)", tab.name())
-    } else if planned == Some(tab) {
-        format!("{} m", tab.name())
     } else {
         tab.name().to_string()
     }
@@ -613,13 +591,12 @@ fn breadcrumb(
     navigation: NavigationView,
     controls: &FluidControls,
     muted: &MuteState,
-    planned: Option<Tab>,
     active_slot: usize,
 ) -> String {
     let tab = navigation.tab;
-    let mut crumbs = vec![crumb(Tab::Master, muted, planned)];
+    let mut crumbs = vec![crumb(Tab::Master, muted)];
     if tab != Tab::Master {
-        crumbs.push(crumb(tab, muted, planned));
+        crumbs.push(crumb(tab, muted));
     }
     let drill = if let Some(slot) = navigation.module_slot {
         let module = controls
@@ -811,17 +788,6 @@ fn mode_surface<'a>(
             reach_len: lead_page_reach(&controls.lead, &controls.pad).len(),
             pattern: LeadPattern::from_value(controls.lead.pattern),
         }),
-        InteractionMode::Performance(PerformanceMode::Jump {
-            stage: JumpStage::ChooseLayer,
-        }) => ModeSurface::Performance(PerformanceSurface::ChooseLayer),
-        InteractionMode::Performance(PerformanceMode::Jump {
-            stage: JumpStage::AutomationRow { .. },
-        }) => ModeSurface::Performance(PerformanceSurface::ChooseLayer),
-        InteractionMode::Performance(PerformanceMode::Jump {
-            stage: JumpStage::ChooseParameter { instrument },
-        }) => ModeSurface::Performance(PerformanceSurface::ChooseParameter {
-            instrument: *instrument,
-        }),
         InteractionMode::Performance(PerformanceMode::States { leader }) => {
             ModeSurface::Performance(PerformanceSurface::States { leader: *leader })
         }
@@ -980,9 +946,6 @@ pub(crate) fn keyboard_owner(mode: &InteractionMode) -> KeyboardOwner {
         InteractionMode::Palette(_) => KeyboardOwner::Palette,
         InteractionMode::Automation(AutomationMode::Lfo { .. }) => KeyboardOwner::Lfo,
         InteractionMode::Automation(AutomationMode::Envelope { .. }) => KeyboardOwner::Envelope,
-        InteractionMode::Performance(PerformanceMode::Jump { .. }) => {
-            KeyboardOwner::PerformanceJump
-        }
         InteractionMode::Performance(PerformanceMode::States { .. }) => {
             KeyboardOwner::PerformanceStates
         }
@@ -1146,15 +1109,6 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
             ModeSurface::Lead(lead) => lead_owner_help(*lead),
             _ => unreachable!("lead owner requires lead surface"),
         },
-        KeyboardOwner::PerformanceJump => match mode {
-            ModeSurface::Performance(PerformanceSurface::ChooseLayer) => {
-                "JUMP · map open   Esc".to_string()
-            }
-            ModeSurface::Performance(PerformanceSurface::ChooseParameter { instrument }) => {
-                format!("JUMP {} · map open   Esc", instrument.name())
-            }
-            _ => unreachable!("jump owner requires a jump surface"),
-        },
         KeyboardOwner::PerformanceStates => match mode {
             ModeSurface::Performance(PerformanceSurface::States {
                 leader: StateLeader::Go,
@@ -1267,7 +1221,7 @@ mod tests {
     use super::*;
     use crate::fluid::interaction::{
         AutomationMode, InputPhase, Intent, LeadPlay, LfoDepth, NumericEntry, Page, PaletteMode,
-        PerformanceInstrument, PerformanceMode, SemanticAction,
+        PerformanceMode, SemanticAction,
     };
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -1779,7 +1733,7 @@ mod tests {
             "9␠empty",
             "a␠Pads",
             "r␠Master",
-            "j␠level",
+            "j␠volume",
             "k␠filter",
             "'␠previous",
             "GO␠·␠1-9␠queue",
@@ -2079,7 +2033,7 @@ mod tests {
                 recipe_target: None,
                 editor_motion_target: None,
                 lane_target: None,
-                planned_tab: None,
+                scope_tab: None,
                 chord_target: None,
                 query: "bass".to_string(),
                 selected: 1,
@@ -2249,80 +2203,6 @@ mod tests {
         );
     }
 
-    /// The footer stays short because the immediate map spells out the
-    /// available routes over the control area.
-    #[test]
-    fn jump_leader_footer_names_the_open_map() {
-        let session = session();
-        let mode = InteractionMode::Performance(PerformanceMode::Jump {
-            stage: JumpStage::ChooseLayer,
-        });
-        let line = owner_help(
-            KeyboardOwner::PerformanceJump,
-            &mode_surface(&mode, Tab::Bass, &session.controls, &session.automation),
-        );
-        assert_eq!(line, "JUMP · map open   Esc");
-        assert!(
-            line.chars().count() <= usize::from(MIN_TERMINAL_WIDTH - 2),
-            "the leader footer must fit the minimum frame: {line:?}"
-        );
-    }
-
-    #[test]
-    fn jump_leader_root_map_lists_layers_and_current_page_routes_at_minimum_size() {
-        let model = InteractionModel {
-            mode: InteractionMode::Performance(PerformanceMode::Jump {
-                stage: JumpStage::ChooseLayer,
-            }),
-            ..InteractionModel::default()
-        };
-        let rendered = render_model(&model);
-        for text in [
-            "a\u{2420}Pads",
-            "s\u{2420}Perc",
-            "d\u{2420}Bass",
-            "f\u{2420}Kick",
-            "q\u{2420}Tonal",
-            "w\u{2420}Clap",
-            "e\u{2420}Arp",
-            "r\u{2420}Master",
-            "j\u{2420}Vol",
-            "k\u{2420}Filter",
-            "m\u{2420}Mute",
-            "1/2/4/8\u{2420}Grab",
-            "Esc\u{2420}\u{2420}Cancel",
-        ] {
-            assert!(rendered.contains(text), "missing {text:?}:\n{rendered}");
-        }
-    }
-
-    #[test]
-    fn jump_leader_renders_a_map_over_the_control_area() {
-        let interaction = InteractionModel {
-            navigation: Navigation::Kick {
-                selected: 0,
-                drill: KickDrill::None,
-            },
-            mode: InteractionMode::Performance(PerformanceMode::Jump {
-                stage: JumpStage::ChooseParameter {
-                    instrument: PerformanceInstrument::Kick,
-                },
-            }),
-            ..InteractionModel::default()
-        };
-        let mut session = session();
-        session.controls.kick.interval_beats = 1.25;
-
-        let rendered = render_model_with_session(&interaction, &session);
-
-        assert!(
-            rendered.contains("JUMP\u{2420}Kick")
-                && rendered.contains("Kick")
-                && rendered.contains("j\u{2420}\u{2420}\u{2420}\u{2420}volume"),
-            "the pending leader names its target and keys: {rendered:?}"
-        );
-    }
-
     #[test]
     fn accepted_transition_is_visible_in_the_immediately_following_frame() {
         let transition = InteractionModel::default().update(SemanticAction {
@@ -2384,7 +2264,7 @@ mod tests {
             70,
         );
         assert!(frame.contains("SHORTCUTS"), "{frame}");
-        assert!(frame.contains("Jump␠(Space,␠then␠one␠key)"), "{frame}");
+        assert!(frame.contains("Grab␠(then␠1␠/␠2␠/␠4␠/␠8␠bars)"), "{frame}");
         assert!(frame.contains("Gestures"), "{frame}");
         assert!(frame.contains("Esc:␠close"), "{frame}");
 
@@ -2527,28 +2407,6 @@ mod tests {
             previous = row;
         }
         assert!(frame.contains("↵␠enter"), "{frame}");
-    }
-
-    #[test]
-    fn pending_mute_uses_the_small_m_marker_until_the_bar() {
-        let mut session = session();
-        session.planned = Some(PlannedAction::Mute {
-            tab: Tab::Kick,
-            target_beat: 4.0,
-        });
-
-        let rendered = render_model_with_session_at_size(
-            &InteractionModel::default(),
-            &session,
-            TelemetryView::default(),
-            80,
-            24,
-        );
-
-        assert!(
-            rendered.contains("Kick\u{2420}m"),
-            "missing planned marker:\n{rendered}"
-        );
     }
 
     #[test]

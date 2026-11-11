@@ -37,8 +37,6 @@ pub(crate) struct LiveSessionSnapshot {
     pub(crate) hold_muted: [bool; HOLD_MUTE_COUNT],
     pub(crate) kick_bass_latched: bool,
     pub(crate) kick_bass_press_seconds: Option<f64>,
-    /// A boundary action that changes the audible future of this session.
-    pub(crate) planned: Option<PlannedAction>,
     pub(crate) pending_state: Option<PendingState>,
     pub(crate) current_state: Option<usize>,
     /// The state that was current before the most recent landing; `''`
@@ -99,7 +97,6 @@ impl LiveSessionSnapshot {
             hold_muted: [false; HOLD_MUTE_COUNT],
             kick_bass_latched: song.kick_bass_latched,
             kick_bass_press_seconds: None,
-            planned: song.planned,
             pending_state: None,
             current_state: None,
             previous_state: None,
@@ -134,7 +131,6 @@ impl LiveSessionSnapshot {
             hold_muted: [false; HOLD_MUTE_COUNT],
             kick_bass_latched: false,
             kick_bass_press_seconds: None,
-            planned: None,
             pending_state: None,
             current_state: None,
             previous_state: None,

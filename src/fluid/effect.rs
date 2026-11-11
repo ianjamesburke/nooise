@@ -294,7 +294,6 @@ impl EffectExecutor {
             automation: snapshot.automation.snapshot_at(beat),
             tonal_sequence: Some(snapshot.tonal_sequence.clone()),
             muted: snapshot.muted,
-            planned: snapshot.planned.map(|action| action.rebased_at(beat)),
             vamp: snapshot.vamp.map(|vamp| vamp.rebased_at(beat)),
             push: snapshot.push,
             kick_bass_latched: snapshot.kick_bass_latched,
@@ -869,24 +868,6 @@ impl EffectExecutor {
                         generation: snapshot.generation,
                     };
                 }
-                if !self.session.audio_clock_active()
-                    && let Some(action) = self
-                        .session
-                        .load()
-                        .planned
-                        .filter(|action| action.is_due(beat))
-                {
-                    let tab = action.tab();
-                    let snapshot = self.session.update(|snapshot| {
-                        snapshot.muted[tab as usize] = !snapshot.muted[tab as usize];
-                        snapshot.planned = None;
-                    });
-                    self.recent.touch(tab.level_id().unwrap_or("master.level"));
-                    self.show_message(format!("{} mute applied", tab.name()));
-                    acknowledgement = EffectAcknowledgement::Published {
-                        generation: snapshot.generation,
-                    };
-                }
                 if !self.session.audio_clock_active() && self.session.load().push.is_due(beat) {
                     let snapshot = self.session.update(|snapshot| {
                         let pad = &snapshot.controls.pad;
@@ -1176,29 +1157,6 @@ impl EffectExecutor {
             .update(|snapshot| snapshot.muted[tab as usize] = muted);
     }
 
-    pub(crate) fn plan_mute(
-        &mut self,
-        tab: Tab,
-        beat: f64,
-    ) -> Result<EffectAcknowledgement, EffectFailure> {
-        let target_beat = next_bar_beat(beat);
-        let snapshot = self.session.update(|snapshot| {
-            snapshot.planned = match snapshot.planned {
-                Some(PlannedAction::Mute { tab: armed, .. }) if armed == tab => None,
-                _ => Some(PlannedAction::Mute { tab, target_beat }),
-            };
-        });
-        let message = if snapshot.planned.is_some() {
-            format!("{} mute armed for next bar", tab.name())
-        } else {
-            format!("{} mute cancelled", tab.name())
-        };
-        self.show_message(message);
-        Ok(EffectAcknowledgement::Published {
-            generation: snapshot.generation,
-        })
-    }
-
     /// One Push the Harmony key: queue a move where the quantize setting
     /// lands it (composing with one already queued), undo, or hand back to
     /// the progression. Like
@@ -1393,12 +1351,6 @@ impl EffectExecutor {
             snapshot.transport = Transport::Playing;
             snapshot.transport_restart = snapshot.transport_restart.wrapping_add(1);
             snapshot.automation.restart();
-            snapshot.planned = snapshot.planned.map(|action| match action {
-                PlannedAction::Mute { tab, .. } => PlannedAction::Mute {
-                    tab,
-                    target_beat: 4.0,
-                },
-            });
             snapshot.vamp = snapshot.vamp.map(|vamp| VampState::start(0.0, vamp.slot));
             snapshot.push = snapshot.push.restarted();
         });
@@ -1680,7 +1632,6 @@ impl EffectExecutor {
             InteractionEffect::SelectPage(page) => Ok(EffectAcknowledgement::PageSelected(page)),
             InteractionEffect::State(action) => self.state_action(action),
             InteractionEffect::ToggleStateQueue(index) => self.toggle_state_queue(index),
-            InteractionEffect::PlanMute(tab) => self.plan_mute(tab, context.beat),
             InteractionEffect::Harmony(action) => self.push_harmony(action, context.beat),
             InteractionEffect::GrabHarmony(duration) => self.grab_harmony(duration),
             InteractionEffect::SetHarmonyQuantize(quantize) => {
@@ -1843,7 +1794,6 @@ impl EffectExecutor {
             }
             InteractionEffect::State(action) => self.state_action(action),
             InteractionEffect::ToggleStateQueue(index) => self.toggle_state_queue(index),
-            InteractionEffect::PlanMute(tab) => self.plan_mute(tab, context.beat),
             InteractionEffect::Harmony(action) => self.push_harmony(action, context.beat),
             InteractionEffect::GrabHarmony(duration) => self.grab_harmony(duration),
             InteractionEffect::SetHarmonyQuantize(quantize) => {
@@ -3328,74 +3278,6 @@ mod tests {
                 before.controls.pad.progression.to_bits()
             );
         }
-    }
-
-    #[test]
-    fn planned_mute_commits_on_its_bar_and_repeating_it_cancels() {
-        let mut executor = executor();
-
-        executor.plan_mute(Tab::Kick, 5.25).unwrap();
-        assert_eq!(
-            executor.session().load().planned,
-            Some(PlannedAction::Mute {
-                tab: Tab::Kick,
-                target_beat: 8.0,
-            })
-        );
-        executor
-            .execute(LiveEffect::CommitPending { beat: 7.99 })
-            .unwrap();
-        assert!(!executor.session().load().muted[Tab::Kick as usize]);
-        executor
-            .execute(LiveEffect::CommitPending { beat: 8.0 })
-            .unwrap();
-        assert!(executor.session().load().muted[Tab::Kick as usize]);
-        assert_eq!(executor.session().load().planned, None);
-
-        executor.plan_mute(Tab::Kick, 8.0).unwrap();
-        executor.plan_mute(Tab::Kick, 8.0).unwrap();
-        assert_eq!(executor.session().load().planned, None);
-    }
-
-    #[test]
-    fn audio_clock_owns_armed_mute_boundary() {
-        let mut executor = executor();
-        executor.plan_mute(Tab::Kick, 5.25).unwrap();
-        executor.session().publish_audio_beat(7.99);
-
-        executor
-            .execute(LiveEffect::CommitPending { beat: 8.0 })
-            .unwrap();
-
-        assert!(!executor.session().load().muted[Tab::Kick as usize]);
-        assert_eq!(
-            executor.session().load().planned,
-            Some(PlannedAction::Mute {
-                tab: Tab::Kick,
-                target_beat: 8.0,
-            })
-        );
-    }
-
-    #[test]
-    fn saving_an_armed_mute_rebases_its_remaining_wait() {
-        let mut executor = executor();
-        executor.plan_mute(Tab::Kick, 5.25).unwrap();
-        executor.session().publish_audio_beat(6.0);
-        let mut clipboard = FakeClipboard::default();
-
-        executor
-            .execute_with_clipboard(LiveEffect::CopySong, &mut clipboard)
-            .unwrap();
-
-        let song = decode_song_code(clipboard.value.as_deref().unwrap()).unwrap();
-        assert_eq!(
-            song.planned,
-            Some(PlannedAction::Mute {
-                tab: Tab::Kick,
-                target_beat: 2.0,
-            })
-        );
     }
 
     #[test]

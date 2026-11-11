@@ -28,7 +28,6 @@ use rosc::{OscBundle, OscMessage, OscPacket, OscTime, OscType, decoder, encoder}
 use super::controls::{CHORD_SLOT_COUNT, FluidControls, LEAD_STEP_COUNT};
 use super::gesture::{GESTURE_COUNT, GestureKind};
 use super::interaction::{InteractionMode, InteractionModel, Navigation};
-use super::planned::PlannedAction;
 use super::registry::{ControlKind, TAB_COUNT, Tab, module_slot_collapsed_id, spec_by_id};
 use super::session::LiveSessionSnapshot;
 use super::view::UiViewModel;
@@ -356,7 +355,6 @@ pub(crate) struct OscUiSnapshot {
     pub(crate) page_rows: Vec<OscPageRow>,
     pub(crate) pad_window: OscPadWindowState,
     pub(crate) steps: OscStepsState,
-    planned: Option<PlannedAction>,
 }
 
 pub(crate) type SharedOscUiState = Arc<ArcSwap<Option<OscUiSnapshot>>>;
@@ -412,18 +410,12 @@ impl OscUiPublisher {
 
 #[derive(Clone, Copy, PartialEq)]
 struct UiPlayback {
-    planned_beats: [f32; TAB_COUNT],
     active_slot: usize,
 }
 
 impl UiPlayback {
-    fn at(snapshot: &OscUiSnapshot, beat: f64, active_chord: u64) -> Self {
-        let mut planned_beats = [0.0; TAB_COUNT];
-        if let Some(PlannedAction::Mute { tab, target_beat }) = snapshot.planned {
-            planned_beats[tab as usize] = (target_beat - beat).max(0.0) as f32;
-        }
+    fn at(active_chord: u64) -> Self {
         Self {
-            planned_beats,
             active_slot: active_chord as usize % CHORD_SLOT_COUNT,
         }
     }
@@ -524,7 +516,6 @@ impl OscUiSnapshot {
             layers,
             page_rows,
             pad_window,
-            planned: session.planned,
             steps: OscStepsState {
                 pad_steps,
                 lead_step_count,
@@ -554,15 +545,12 @@ impl OscUiSnapshot {
         }
         for (index, tab) in Tab::all().into_iter().enumerate() {
             let layer = &self.layers[index];
-            if previous.map(|p| &p.layers[index]) != Some(layer)
-                || old.map(|p| p.planned_beats[index]) != Some(playback.planned_beats[index])
-            {
+            if previous.map(|p| &p.layers[index]) != Some(layer) {
                 out.push(message(
                     state_layer_addr(tab),
                     vec![
                         OscType::Float(layer.level_ratio),
                         OscType::Int(i32::from(layer.muted)),
-                        OscType::Float(playback.planned_beats[index]),
                         OscType::String(layer.first_module_label.clone()),
                         OscType::Float(layer.first_module_ratio),
                         OscType::Int(i32::from(layer.first_module_discrete)),
@@ -635,7 +623,6 @@ pub(crate) enum OscUiCommand {
     NavAdjust { steps: i32 },
     MuteToggle(Tab),
     MuteSet { tab: Tab, muted: bool },
-    MutePlan(Tab),
     Gesture { kind: GestureKind, active: bool },
     GestureReleaseAll,
     Transport(OscTransportCmd),
@@ -784,10 +771,6 @@ pub(crate) fn parse_inbound_message(msg: &OscMessage) -> Option<OscInboundComman
             let tab = parse_layer_name(osc_str(msg.args.first()?)?)?;
             let muted = osc_i32(msg.args.get(1)?)? != 0;
             Some(OscInboundCommand::Ui(OscUiCommand::MuteSet { tab, muted }))
-        }
-        "/nooise/cmd/mute/plan" => {
-            let tab = parse_layer_name(osc_str(msg.args.first()?)?)?;
-            Some(OscInboundCommand::Ui(OscUiCommand::MutePlan(tab)))
         }
         "/nooise/cmd/gesture" => {
             let kind = parse_gesture_name(osc_str(msg.args.first()?)?)?;
@@ -1236,11 +1219,7 @@ fn emit_loop(
         if let Some(shared) = ui_state {
             let current = shared.load_full();
             if let Some(snapshot) = current.as_ref() {
-                let playback = UiPlayback::at(
-                    snapshot,
-                    telemetry.beat(),
-                    telemetry.chord_slot.load(Ordering::Relaxed),
-                );
+                let playback = UiPlayback::at(telemetry.chord_slot.load(Ordering::Relaxed));
                 let changed = last_ui
                     .as_ref()
                     .is_none_or(|last| !Arc::ptr_eq(last, &current));
@@ -1333,27 +1312,18 @@ mod tests {
     }
 
     #[test]
-    fn cached_ui_keeps_countdown_and_chord_live_without_republishing() {
+    fn cached_ui_keeps_the_chord_live_without_republishing() {
         let shared = new_shared_osc_ui_state();
         let mut publisher = OscUiPublisher::default();
         let model = InteractionModel::default();
-        let mut session = LiveSessionSnapshot::from_controls(FluidControls::default());
-        session.planned = Some(PlannedAction::Mute {
-            tab: Tab::Kick,
-            target_beat: 8.0,
-        });
+        let session = LiveSessionSnapshot::from_controls(FluidControls::default());
         publish_ui(&mut publisher, &shared, &model, &session);
         let published = shared.load_full();
         let snapshot = published.as_ref().as_ref().unwrap();
-        let before = UiPlayback::at(snapshot, 4.0, 0);
-        let after = UiPlayback::at(snapshot, 5.0, 2);
+        let before = UiPlayback::at(0);
+        let after = UiPlayback::at(2);
         let messages = snapshot.diff_at(Some(snapshot), after, Some(before));
-        assert_eq!(messages.len(), 2);
-        let layer = messages
-            .iter()
-            .find(|m| m.addr == state_layer_addr(Tab::Kick))
-            .unwrap();
-        assert_eq!(layer.args[2], OscType::Float(3.0));
+        assert_eq!(messages.len(), 1);
         let window = messages
             .iter()
             .find(|m| m.addr == ADDR_STATE_PAD_WINDOW)
