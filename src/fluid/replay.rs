@@ -5917,16 +5917,18 @@ fn queued_harmony(result: &ReplayResult) -> Option<(String, f64)> {
     })
 }
 
-/// `c` then each home-row key pushes once from the opening Am11 (heard as A
-/// minor) and hands the keyboard straight back to browsing, through the
+/// Space down and up, as a held thumb: the push keys go between them.
+fn space(phase: InputPhase) -> TraceEvent {
+    key(0, FixtureKey::Character(' '), phase)
+}
+
+/// With Space held, each home-row key pushes once from the opening Am11
+/// (heard as A minor); letting go returns to browsing. Through the
 /// production mapper, kernel and executor.
 #[test]
-fn c_pushes_one_move_per_key_and_returns_to_browsing() {
+fn holding_space_makes_the_home_row_push_the_harmony() {
     let plain = |code| key(0, code, InputPhase::Press);
-    let opened = replay_bar(
-        &[plain(FixtureKey::Character('c'))],
-        TerminalCapabilities::full(),
-    );
+    let opened = replay(&[space(InputPhase::Press)], TerminalCapabilities::full());
     assert_eq!(opened.final_owner(), Some("HARMONY"));
     for (key_char, expected) in [
         ('j', "G"),
@@ -5940,12 +5942,12 @@ fn c_pushes_one_move_per_key_and_returns_to_browsing() {
     ] {
         let pushed = replay_bar(
             &[
-                plain(FixtureKey::Character('c')),
+                space(InputPhase::Press),
                 plain(FixtureKey::Character(key_char)),
             ],
             TerminalCapabilities::full(),
         );
-        assert_eq!(pushed.final_owner(), Some("BROWSE"), "{key_char}");
+        assert_eq!(pushed.final_owner(), Some("HARMONY"), "{key_char}");
         assert_eq!(pushed.effect_count("Harmony(Move("), 1, "{key_char}");
         assert_eq!(
             queued_harmony(&pushed),
@@ -5954,25 +5956,21 @@ fn c_pushes_one_move_per_key_and_returns_to_browsing() {
         );
         assert!(pushed.deferred_inputs.is_empty());
     }
-    // `u` with nothing pushed and `g` with nothing to release are explicit
-    // no-ops that still return to browsing.
-    for key_char in ['u', 'g'] {
-        let inert = replay_bar(
-            &[
-                plain(FixtureKey::Character('c')),
-                plain(FixtureKey::Character(key_char)),
-            ],
-            TerminalCapabilities::full(),
-        );
-        assert_eq!(inert.final_owner(), Some("BROWSE"));
-        assert_eq!(inert.harmony_queued, None);
-        assert_eq!(inert.effect_count("Harmony("), 1);
-    }
-    // A key outside the map is inert and keeps the one-shot open; Esc
-    // leaves with nothing pushed.
-    let cancelled = replay_bar(
+    let let_go = replay(
         &[
-            plain(FixtureKey::Character('c')),
+            space(InputPhase::Press),
+            plain(FixtureKey::Character('l')),
+            space(InputPhase::Repeat),
+            space(InputPhase::Release),
+        ],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(let_go.final_owner(), Some("BROWSE"));
+    assert_eq!(let_go.effect_count("Harmony(Move("), 1);
+    // A key outside the map is inert; Esc also leaves.
+    let cancelled = replay(
+        &[
+            space(InputPhase::Press),
             plain(FixtureKey::Character('z')),
             plain(FixtureKey::Escape),
         ],
@@ -5980,64 +5978,94 @@ fn c_pushes_one_move_per_key_and_returns_to_browsing() {
     );
     assert_eq!(cancelled.final_owner(), Some("BROWSE"));
     assert_eq!(cancelled.effect_count("Harmony("), 0);
-    assert_eq!(cancelled.harmony_queued, None);
 }
 
-/// Shift+C latches the mode: moves compose from the queued chord before the
-/// bar, `u` walks back, `g` releases, and only Esc returns to browsing. A
-/// terminal reporting the bare glyph `C` latches the same way.
+/// Space never edits anything by itself: down, autorepeat and up change no
+/// session state and emit no effect.
 #[test]
-fn shift_c_latches_moves_compose_before_the_bar_and_undo_walks_back() {
-    let plain = |code| key(0, code, InputPhase::Press);
-    for latch in [
-        modified_key(0, FixtureKey::Character('C'), InputPhase::Press, 1),
-        plain(FixtureKey::Character('C')),
-    ] {
-        let two_lifts = replay_bar(
-            &[
-                latch.clone(),
-                plain(FixtureKey::Character('l')),
-                plain(FixtureKey::Character('l')),
-            ],
-            TerminalCapabilities::full(),
-        );
-        assert_eq!(two_lifts.final_owner(), Some("HARMONY"));
-        // Two fifths up from A minor: E minor, then B, diminished in A minor.
-        assert_eq!(queued_harmony(&two_lifts), Some(("Bdim".to_string(), 4.0)));
-        let undone = replay_bar(
-            &[
-                latch.clone(),
-                plain(FixtureKey::Character('l')),
-                plain(FixtureKey::Character('l')),
-                plain(FixtureKey::Character('u')),
-            ],
-            TerminalCapabilities::full(),
-        );
-        assert_eq!(queued_harmony(&undone), Some(("Em".to_string(), 4.0)));
-        let withdrawn = replay_bar(
-            &[
-                latch.clone(),
-                plain(FixtureKey::Character('l')),
-                plain(FixtureKey::Character('u')),
-                plain(FixtureKey::Escape),
-            ],
-            TerminalCapabilities::full(),
-        );
-        assert_eq!(withdrawn.harmony_queued, None);
-        assert_eq!(withdrawn.final_owner(), Some("BROWSE"));
-    }
+fn space_alone_changes_nothing() {
+    let result = replay(
+        &[
+            space(InputPhase::Press),
+            space(InputPhase::Repeat),
+            space(InputPhase::Release),
+        ],
+        TerminalCapabilities::full(),
+    );
+    assert!(result.effects.is_empty(), "{:?}", result.effects);
+    assert_eq!(result.session_generation, 0);
+    assert_eq!(result.final_owner(), Some("BROWSE"));
 }
 
-/// A queued push lands on its bar line (here through the production tick,
-/// which owns landing while no audio clock runs), the header reads the
-/// pushed chord, and `g` hands the harmony back on the following bar.
+/// Where the terminal cannot report Space's release, tapping Space then one
+/// key is one move, and the keyboard returns to browsing.
+#[test]
+fn without_release_reporting_space_then_a_key_is_one_move() {
+    let result = replay_bar(
+        &[
+            key(0, FixtureKey::Character(' '), InputPhase::Press),
+            key(0, FixtureKey::Character('l'), InputPhase::Press),
+            key(0, FixtureKey::Character('l'), InputPhase::Press),
+        ],
+        TerminalCapabilities::default(),
+    );
+    assert_eq!(result.final_owner(), Some("BROWSE"));
+    assert_eq!(result.effect_count("Harmony(Move("), 1);
+    assert_eq!(queued_harmony(&result), Some(("Em".to_string(), 4.0)));
+}
+
+/// Quantized, taps chain while Space is held: moves before the bar compose
+/// from the queued chord, and undo walks back.
+#[test]
+fn held_moves_compose_before_the_bar_and_undo_walks_back() {
+    let plain = |character| key(0, FixtureKey::Character(character), InputPhase::Press);
+    let two_lifts = replay_bar(
+        &[space(InputPhase::Press), plain('l'), plain('l')],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(two_lifts.final_owner(), Some("HARMONY"));
+    // Two fifths up from A minor: E minor, then B, diminished in A minor.
+    assert_eq!(queued_harmony(&two_lifts), Some(("Bdim".to_string(), 4.0)));
+    let undone = replay_bar(
+        &[space(InputPhase::Press), plain('l'), plain('l'), plain('u')],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(queued_harmony(&undone), Some(("Em".to_string(), 4.0)));
+    let withdrawn = replay_bar(
+        &[
+            space(InputPhase::Press),
+            plain('l'),
+            plain('u'),
+            space(InputPhase::Release),
+        ],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(withdrawn.harmony_queued, None);
+    assert_eq!(withdrawn.final_owner(), Some("BROWSE"));
+}
+
+/// Losing focus never delivers Space's key-up, so a held push ends there.
+#[test]
+fn focus_loss_ends_a_held_push() {
+    let result = replay(
+        &[
+            space(InputPhase::Press),
+            TraceEvent::Focus {
+                after_ms: 10,
+                gained: false,
+            },
+        ],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(result.final_owner(), Some("BROWSE"));
+}
+
 #[test]
 fn a_push_lands_on_the_bar_and_g_releases_it_on_the_next() {
     let plain = |after_ms, code| key(after_ms, code, InputPhase::Press);
-    let latch = modified_key(0, FixtureKey::Character('C'), InputPhase::Press, 1);
     let before_bar = replay_bar(
         &[
-            latch.clone(),
+            space(InputPhase::Press),
             plain(0, FixtureKey::Character('f')),
             TraceEvent::Tick { after_ms: 3_900 },
         ],
@@ -6049,7 +6077,7 @@ fn a_push_lands_on_the_bar_and_g_releases_it_on_the_next() {
     );
     let landed = replay_bar(
         &[
-            latch.clone(),
+            space(InputPhase::Press),
             plain(0, FixtureKey::Character('f')),
             TraceEvent::Tick { after_ms: 4_100 },
         ],
@@ -6064,12 +6092,12 @@ fn a_push_lands_on_the_bar_and_g_releases_it_on_the_next() {
 
     let released = replay_bar(
         &[
-            latch,
+            space(InputPhase::Press),
             plain(0, FixtureKey::Character('f')),
             TraceEvent::Tick { after_ms: 4_100 },
             plain(0, FixtureKey::Character('g')),
             TraceEvent::Tick { after_ms: 4_000 },
-            plain(0, FixtureKey::Escape),
+            space(InputPhase::Release),
         ],
         TerminalCapabilities::full(),
     );
@@ -6078,30 +6106,31 @@ fn a_push_lands_on_the_bar_and_g_releases_it_on_the_next() {
     assert_eq!(released.final_owner(), Some("BROWSE"));
 }
 
-/// Ctrl+C still quits from inside the mode, latched or not, and Ctrl+S
-/// still saves; the pushed chord travels in the saved code.
+/// Ctrl+C still quits from inside the mode, held or one-shot.
 #[test]
 fn control_chords_reach_the_harmony_mode() {
     let quit = modified_key(0, FixtureKey::Character('c'), InputPhase::Press, 1 << 1);
-    for open in [
-        key(0, FixtureKey::Character('c'), InputPhase::Press),
-        modified_key(0, FixtureKey::Character('C'), InputPhase::Press, 1),
+    for capabilities in [
+        TerminalCapabilities::full(),
+        TerminalCapabilities::default(),
     ] {
-        let result = replay(&[open, quit.clone()], TerminalCapabilities::full());
+        let result = replay(&[space(InputPhase::Press), quit.clone()], capabilities);
         assert_eq!(result.effect_count("Quit"), 1);
         assert_eq!(result.final_owner(), Some("HARMONY"));
     }
 }
 
-/// A gesture held under the finger keeps playing through the mode: entering,
-/// pushing and leaving never release it, and its own key-up still does.
+/// A gesture held under the other hand keeps playing through a push:
+/// holding Space, pushing and letting go never release it, and its own
+/// key-up still does.
 #[test]
 fn harmony_mode_preserves_physical_holds() {
     let result = replay_bar(
         &[
             key(0, FixtureKey::Character('w'), InputPhase::Press),
-            key(50, FixtureKey::Character('c'), InputPhase::Press),
+            key(50, FixtureKey::Character(' '), InputPhase::Press),
             key(50, FixtureKey::Character('l'), InputPhase::Press),
+            key(50, FixtureKey::Character(' '), InputPhase::Release),
             key(50, FixtureKey::Character('w'), InputPhase::Release),
         ],
         TerminalCapabilities::full(),
@@ -6110,21 +6139,21 @@ fn harmony_mode_preserves_physical_holds() {
     assert_eq!(result.effect_count("GestureReleaseAll"), 0);
     assert_eq!(result.effect_count("GestureRelease(Submerge)"), 1);
     assert_eq!(queued_harmony(&result), Some(("Em".to_string(), 4.0)));
-    let latched = replay_bar(
+    let inside = replay_bar(
         &[
             key(0, FixtureKey::Character('w'), InputPhase::Press),
-            modified_key(50, FixtureKey::Character('C'), InputPhase::Press, 1),
+            key(50, FixtureKey::Character(' '), InputPhase::Press),
             key(50, FixtureKey::Character('w'), InputPhase::Release),
         ],
         TerminalCapabilities::full(),
     );
-    assert_eq!(latched.effect_count("GestureReleaseAll"), 0);
-    assert_eq!(latched.effect_count("GestureRelease(Submerge)"), 1);
-    assert_eq!(latched.final_owner(), Some("HARMONY"));
+    assert_eq!(inside.effect_count("GestureReleaseAll"), 0);
+    assert_eq!(inside.effect_count("GestureRelease(Submerge)"), 1);
+    assert_eq!(inside.final_owner(), Some("HARMONY"));
 }
 
 /// The palette reaches every push: the keyboard path is complete without
-/// knowing `c`.
+/// knowing Space.
 #[test]
 fn the_palette_pushes_the_harmony() {
     let mut trace = vec![key(0, FixtureKey::Character('/'), InputPhase::Press)];
@@ -6145,7 +6174,7 @@ fn the_palette_pushes_the_harmony() {
 fn by_default_a_push_lands_at_once() {
     let result = replay(
         &[
-            key(0, FixtureKey::Character('c'), InputPhase::Press),
+            space(InputPhase::Press),
             key(0, FixtureKey::Character('f'), InputPhase::Press),
             TraceEvent::Tick { after_ms: 20 },
         ],
@@ -6177,7 +6206,7 @@ fn the_palette_sets_the_quantize_and_the_overlay_shows_it() {
     );
     trace.extend([
         key(0, FixtureKey::Enter, InputPhase::Press),
-        modified_key(0, FixtureKey::Character('C'), InputPhase::Press, 1),
+        space(InputPhase::Press),
         key(0, FixtureKey::Character('l'), InputPhase::Press),
     ]);
     let result = replay(&trace, TerminalCapabilities::full());

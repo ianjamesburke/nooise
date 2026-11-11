@@ -209,8 +209,8 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         ModeSurface::Performance(PerformanceSurface::States { leader }) => {
             draw_state_leader(f, inner, view, *leader);
         }
-        ModeSurface::Performance(PerformanceSurface::Harmony { latched }) => {
-            draw_harmony_leader(f, inner, &view.harmony, *latched);
+        ModeSurface::Performance(PerformanceSurface::Harmony { held }) => {
+            draw_harmony_leader(f, inner, &view.harmony, *held);
         }
         ModeSurface::Performance(PerformanceSurface::Grab { harmony }) => {
             draw_grab_leader(f, inner, *harmony);
@@ -1353,7 +1353,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
         ],
     ));
     lines.extend(state(
-        "Push the Harmony (c once, \u{21e7}C stays)",
+        "Push the Harmony (hold Space)",
         &[
             &[
                 ("j / k", "step down/up"),
@@ -1466,8 +1466,8 @@ fn draw_grab_leader(f: &mut Frame, inner: Rect, harmony: bool) {
 
 /// Push the Harmony's overlay: the chord the next push reads, then every
 /// move's key, word and destination, so the eyes-open player learns the map.
-fn draw_harmony_leader(f: &mut Frame, inner: Rect, harmony: &HarmonyView, latched: bool) {
-    let title = if latched {
+fn draw_harmony_leader(f: &mut Frame, inner: Rect, harmony: &HarmonyView, held: bool) {
+    let title = if held {
         " Push the Harmony "
     } else {
         " Push once "

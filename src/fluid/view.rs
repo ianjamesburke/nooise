@@ -337,7 +337,7 @@ pub(crate) enum PerformanceSurface {
         leader: StateLeader,
     },
     Harmony {
-        latched: bool,
+        held: bool,
     },
     /// A pending `g` (knob or editor field) or `G` (pushed harmony).
     Grab {
@@ -791,8 +791,8 @@ fn mode_surface<'a>(
         InteractionMode::Performance(PerformanceMode::States { leader }) => {
             ModeSurface::Performance(PerformanceSurface::States { leader: *leader })
         }
-        InteractionMode::Performance(PerformanceMode::Harmony { latched }) => {
-            ModeSurface::Performance(PerformanceSurface::Harmony { latched: *latched })
+        InteractionMode::Performance(PerformanceMode::Harmony { held }) => {
+            ModeSurface::Performance(PerformanceSurface::Harmony { held: *held })
         }
         InteractionMode::Performance(PerformanceMode::Grab { target }) => {
             ModeSurface::Performance(PerformanceSurface::Grab {
@@ -1119,10 +1119,10 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
             _ => unreachable!("states owner requires a states surface"),
         },
         KeyboardOwner::PerformanceHarmony => match mode {
-            ModeSurface::Performance(PerformanceSurface::Harmony { latched: true }) => {
-                "HARMONY · push   u undo   g release   Esc".to_string()
+            ModeSurface::Performance(PerformanceSurface::Harmony { held: true }) => {
+                "HARMONY · push   u undo   g release   let go".to_string()
             }
-            ModeSurface::Performance(PerformanceSurface::Harmony { latched: false }) => {
+            ModeSurface::Performance(PerformanceSurface::Harmony { held: false }) => {
                 "HARMONY · one push   Esc".to_string()
             }
             _ => unreachable!("harmony owner requires a harmony surface"),
@@ -1630,9 +1630,9 @@ mod tests {
         push.land([45, 48, 52, 57], 0);
         push.push(HarmonyMove::FifthUp, key, am, 1.0);
         session.push = push;
-        for latched in [true, false] {
+        for held in [true, false] {
             let interaction = InteractionModel {
-                mode: InteractionMode::Performance(PerformanceMode::Harmony { latched }),
+                mode: InteractionMode::Performance(PerformanceMode::Harmony { held }),
                 ..InteractionModel::default()
             };
             for (width, height) in [(46, 11), (80, 24)] {
@@ -1647,7 +1647,7 @@ mod tests {
                     height,
                 );
                 if std::env::var_os("NOOISE_PRINT_STATUS_FRAMES").is_some() {
-                    println!("{width}x{height} harmony latched={latched}:\n{frame}");
+                    println!("{width}x{height} harmony held={held}:\n{frame}");
                 }
                 // At the minimum frame the overlay covers the header and
                 // carries the same now/next line itself.

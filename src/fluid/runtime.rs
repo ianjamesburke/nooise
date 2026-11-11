@@ -463,6 +463,9 @@ pub(crate) fn map_input(
     if *phase == InputPhase::Release
         && let PhysicalKey::Character(character) = key.code
     {
+        if character == ' ' {
+            return semantic(*phase, Intent::ReleaseHarmony);
+        }
         let lower = character.to_ascii_lowercase();
         if let Some(kind) = GestureKind::from_key(lower) {
             return semantic(*phase, Intent::ReleaseGesture(kind));
@@ -473,6 +476,20 @@ pub(crate) fn map_input(
         if lower == 'a' && (matches!(mode, InteractionMode::Browsing) || mode.preserves_holds()) {
             return semantic(*phase, Intent::ReleaseVamp);
         }
+    }
+
+    // Space opens Push the Harmony: held where the terminal reports its
+    // release, else for one move. Space never edits anything by itself.
+    if matches!(mode, InteractionMode::Browsing)
+        && unmodified
+        && matches!(key.code, PhysicalKey::Character(' '))
+    {
+        return semantic(
+            *phase,
+            Intent::OpenHarmony {
+                held: capabilities.supports_holds(),
+            },
+        );
     }
 
     if matches!(mode, InteractionMode::Browsing)
@@ -631,10 +648,6 @@ fn browsing_binding(code: &PhysicalKey) -> Option<Intent> {
         PhysicalKey::Character('a') => Intent::ToggleVamp,
         PhysicalKey::Character('q') => Intent::ToggleKickBass,
         PhysicalKey::Character('i') => Intent::EnterLeadPlay,
-        // `c` pushes the harmony once; `C` (a terminal that reports the
-        // shifted letter without SHIFT) latches it, as Shift+`c` does.
-        PhysicalKey::Character('c') => Intent::OpenHarmony { latched: false },
-        PhysicalKey::Character('C') => Intent::OpenHarmony { latched: true },
         // `g` grabs Motion on the selected knob; `G` (shifted, or the bare
         // glyph some terminals send) grabs the pushed harmony.
         PhysicalKey::Character('g') => Intent::OpenGrab { harmony: false },
@@ -670,7 +683,6 @@ fn shifted_binding(code: &PhysicalKey) -> Option<Intent> {
         //     Intent::AddAutomation(AutomationKind::Envelope)
         // }
         PhysicalKey::Character('X' | 'x') => Intent::RemoveAutomation,
-        PhysicalKey::Character('C' | 'c') => Intent::OpenHarmony { latched: true },
         PhysicalKey::Character('G' | 'g') => Intent::OpenGrab { harmony: true },
         PhysicalKey::Character('R' | 'r' | 'U' | 'u') => Intent::RandomizeScope,
         // Shifted so a stray keystroke cannot end the song.

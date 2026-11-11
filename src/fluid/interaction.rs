@@ -864,9 +864,10 @@ pub(crate) enum PerformanceMode {
     /// A pending `g` (Motion Grab on the selected knob or editor field) or
     /// `G` (grab the pushed harmony): the next digit names the bar count.
     Grab { target: GrabTarget },
-    /// Push the Harmony: `c` opens it for one move, Shift+`C` latches it
-    /// until Esc. Its home-row keys push the harmony instead of browsing.
-    Harmony { latched: bool },
+    /// Push the Harmony, open while Space is held: its home-row keys push
+    /// the harmony instead of browsing. `held` is false on a terminal that
+    /// cannot report Space's release, where Space then one key is one move.
+    Harmony { held: bool },
 }
 
 /// What a pending grab keeps.
@@ -1187,10 +1188,13 @@ pub(crate) enum Intent {
     ChooseState(usize),
     /// `''`: queue the section that was current before the last landing.
     PreviousState,
-    /// Open Push the Harmony for one move (`c`) or latched (Shift+`C`).
+    /// Space went down: open Push the Harmony until Space comes up (`held`),
+    /// or for one move where the terminal cannot report the release.
     OpenHarmony {
-        latched: bool,
+        held: bool,
     },
+    /// Space came up: close a held Push the Harmony.
+    ReleaseHarmony,
     /// One Push the Harmony key: a move, undo, or release.
     PushHarmony(super::HarmonyAction),
     /// Open the grab leader: `g` for Motion on what is selected, `G` for the
@@ -1310,6 +1314,7 @@ impl Intent {
             Self::ReleaseGesture(_)
             | Self::ReleaseHoldMute(_)
             | Self::ReleaseVamp
+            | Self::ReleaseHarmony
             | Self::ReleaseAllGestures
             | Self::AbandonGestures => &[
                 ModeKind::Browsing,
@@ -1368,7 +1373,8 @@ impl Intent {
             Self::ReleaseLeadTone(_)
             | Self::ReleaseGesture(_)
             | Self::ReleaseHoldMute(_)
-            | Self::ReleaseVamp => PhasePolicy::ReleaseOnly,
+            | Self::ReleaseVamp
+            | Self::ReleaseHarmony => PhasePolicy::ReleaseOnly,
             Self::Cancel
             | Self::EnterLayer(_)
             | Self::EnterChordProgression
@@ -1759,9 +1765,29 @@ impl InteractionModel {
                 effects,
             };
         }
+        if intent == Intent::ReleaseHarmony {
+            // Space's key-up ends a held push; anywhere else it is inert.
+            if matches!(
+                self.mode,
+                InteractionMode::Performance(PerformanceMode::Harmony { held: true })
+            ) {
+                self.mode = InteractionMode::Browsing;
+            }
+            return Transition {
+                model: self,
+                effects: Vec::new(),
+            };
+        }
         if matches!(intent, Intent::ReleaseAllGestures | Intent::AbandonGestures) {
             if intent == Intent::AbandonGestures {
                 self.gesture_input.clear();
+                // Lost focus never delivers Space's key-up: a held push ends.
+                if matches!(
+                    self.mode,
+                    InteractionMode::Performance(PerformanceMode::Harmony { held: true })
+                ) {
+                    self.mode = InteractionMode::Browsing;
+                }
             } else {
                 self.gesture_input.quarantine_all();
             }
@@ -1992,9 +2018,9 @@ fn update_browsing(
                 },
             }));
         }
-        Intent::OpenHarmony { latched } => {
+        Intent::OpenHarmony { held } => {
             *next_mode = Some(InteractionMode::Performance(PerformanceMode::Harmony {
-                latched,
+                held,
             }));
         }
         Intent::EnterLeadPlay => {
@@ -2359,8 +2385,8 @@ fn update_performance(
             PerformanceMode::States { leader } => {
                 update_state_leader(*leader, navigation, layer_rows, intent, next_mode, effects);
             }
-            PerformanceMode::Harmony { latched } => {
-                update_harmony(*latched, intent, next_mode, effects);
+            PerformanceMode::Harmony { held } => {
+                update_harmony(*held, intent, next_mode, effects);
             }
             PerformanceMode::Grab { target } => {
                 update_grab(*target, intent, next_mode, effects);
@@ -2439,12 +2465,12 @@ fn update_grab(
     }
 }
 
-/// Push the Harmony: each key pushes the harmony (or undoes, or releases it)
-/// for the next bar. One-shot entry returns to browsing after one key; the
-/// latched mode stays until Esc. Every key acts on a Press edge, and physical
-/// holds keep running.
+/// Push the Harmony: while Space is held each key pushes the harmony (or
+/// undoes, or releases it), landing per the quantize setting, and Space's
+/// key-up returns to browsing. Without release reporting one key is one move.
+/// Every key acts on a Press edge, and physical holds keep running.
 fn update_harmony(
-    latched: bool,
+    held: bool,
     intent: Intent,
     next_mode: &mut Option<InteractionMode>,
     effects: &mut Vec<InteractionEffect>,
@@ -2453,7 +2479,7 @@ fn update_harmony(
         Intent::Cancel => *next_mode = Some(InteractionMode::Browsing),
         Intent::PushHarmony(action) => {
             effects.push(InteractionEffect::Harmony(action));
-            if !latched {
+            if !held {
                 *next_mode = Some(InteractionMode::Browsing);
             }
         }
