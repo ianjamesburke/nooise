@@ -4,6 +4,15 @@
 
 100% fun. 0% work. nooise never asks the user to do a task that isn't enjoyable — no surgical mixing, no correcting a bad default, no chores.
 
+**The video game engine of music generators** (stated by the owner, 2026-11-10). Two hands on a computer keyboard should be the most enabled way to make music spontaneously: more than at a piano, more than in front of a DAW. Playing nooise should feel like a video game: an easy floor, a very high skill ceiling, and a vocabulary of **moves** that become muscle memory. Prefer designs that:
+
+- Turn musical intent into moves you perform, not values you set or material you prepare (Push the Harmony steers chords relative to where they are; nothing is named or pre-built).
+- Cannot be played wrong, so improvising stays safe and fun under pressure.
+- Reward practice: moves combine and chain, and speed and precision grow with skill.
+- Work eyes-closed, from the home row, with each key always meaning the same thing.
+
+Weigh every feature against this posture alongside the commandments below. A feature that makes the player prepare more and play less is moving the wrong way.
+
 ## Feature-evaluation commandments
 
 Before adding any control or feature, weigh it against every commandment below:
