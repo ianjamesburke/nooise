@@ -573,6 +573,7 @@ pub(crate) fn map_input(
                     PerformanceMode::Jump { .. } => performance_binding(&key.code),
                     PerformanceMode::States { .. } => state_leader_binding(&key.code),
                     PerformanceMode::Harmony { .. } => harmony_binding(&key.code),
+                    PerformanceMode::Grab { .. } => grab_binding(&key.code),
                 }
             } else {
                 return deferred_runtime(MODIFIED_BINDING_UNOWNED);
@@ -636,6 +637,10 @@ fn browsing_binding(code: &PhysicalKey) -> Option<Intent> {
         // shifted letter without SHIFT) latches it, as Shift+`c` does.
         PhysicalKey::Character('c') => Intent::OpenHarmony { latched: false },
         PhysicalKey::Character('C') => Intent::OpenHarmony { latched: true },
+        // `g` grabs Motion on the selected knob; `G` (shifted, or the bare
+        // glyph some terminals send) grabs the pushed harmony.
+        PhysicalKey::Character('g') => Intent::OpenGrab { harmony: false },
+        PhysicalKey::Character('G') => Intent::OpenGrab { harmony: true },
         PhysicalKey::Character(' ') => Intent::ActivatePerformance(PerformanceKind::Jump),
         PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
         PhysicalKey::Enter => Intent::TouchSelected,
@@ -650,6 +655,7 @@ fn automation_binding(code: &PhysicalKey) -> Option<Intent> {
         PhysicalKey::Character(' ') => Some(Intent::ActivatePerformance(PerformanceKind::Jump)),
         // PhysicalKey::Character('e') => Some(Intent::OpenAutomation(AutomationKind::Envelope)),
         PhysicalKey::Character('r' | 'u') => Some(Intent::RandomizeAutomationRow),
+        PhysicalKey::Character('g') => Some(Intent::OpenGrab { harmony: false }),
         _ => slider_binding(code),
     }
 }
@@ -669,6 +675,7 @@ fn shifted_binding(code: &PhysicalKey) -> Option<Intent> {
         // }
         PhysicalKey::Character('X' | 'x') => Intent::RemoveAutomation,
         PhysicalKey::Character('C' | 'c') => Intent::OpenHarmony { latched: true },
+        PhysicalKey::Character('G' | 'g') => Intent::OpenGrab { harmony: true },
         PhysicalKey::Character('R' | 'r' | 'U' | 'u') => Intent::RandomizeScope,
         // Shifted so a stray keystroke cannot end the song.
         PhysicalKey::Character('P' | 'p') => Intent::ToggleTransport,
@@ -746,6 +753,19 @@ fn state_leader_binding(code: &PhysicalKey) -> Option<Intent> {
                     .map(|instrument| Intent::SelectPerformanceInstrument { instrument })
             }),
     }
+}
+
+/// A pending grab's keyboard: `1`, `2`, `4` or `8` bars. Every other key is
+/// inert.
+fn grab_binding(code: &PhysicalKey) -> Option<Intent> {
+    let duration = match *code {
+        PhysicalKey::Character('1') => super::MotionDuration::Beats4,
+        PhysicalKey::Character('2') => super::MotionDuration::Beats8,
+        PhysicalKey::Character('4') => super::MotionDuration::Beats16,
+        PhysicalKey::Character('8') => super::MotionDuration::Beats32,
+        _ => return None,
+    };
+    Some(Intent::GrabMotion(duration))
 }
 
 /// Push the Harmony's keyboard: the `HARMONY_MOVES` home-row keys push, `u`

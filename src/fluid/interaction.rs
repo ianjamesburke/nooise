@@ -885,11 +885,27 @@ pub(crate) enum PerformanceMode {
     States {
         leader: StateLeader,
     },
+    /// A pending `g` (Motion Grab on the selected knob or editor field) or
+    /// `G` (grab the pushed harmony): the next digit names the bar count.
+    Grab {
+        target: GrabTarget,
+    },
     /// Push the Harmony: `c` opens it for one move, Shift+`C` latches it
     /// until Esc. Its home-row keys push the harmony instead of browsing.
     Harmony {
         latched: bool,
     },
+}
+
+/// What a pending grab keeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum GrabTarget {
+    /// The selected knob's recent movement, as Motion (`g` in browsing).
+    Knob,
+    /// The selected automation editor field's movement (`g` in an editor).
+    Field(AutomationMode),
+    /// The chords pushed over the last bars, as the looping progression (`G`).
+    Harmony,
 }
 
 impl PerformanceMode {
@@ -907,7 +923,7 @@ impl PerformanceMode {
     pub(crate) fn preserves_holds(self) -> bool {
         match self {
             Self::Jump { .. } => false,
-            Self::States { .. } | Self::Harmony { .. } => true,
+            Self::States { .. } | Self::Harmony { .. } | Self::Grab { .. } => true,
         }
     }
 }
@@ -1226,6 +1242,11 @@ pub(crate) enum Intent {
     },
     /// One Push the Harmony key: a move, undo, or release.
     PushHarmony(super::HarmonyAction),
+    /// Open the grab leader: `g` for Motion on what is selected, `G` for the
+    /// pushed harmony. The kernel resolves the knob or editor field.
+    OpenGrab {
+        harmony: bool,
+    },
     /// Grab recent movement on the visible knob, phase-anchored to its
     /// nearest bar downbeat.
     GrabMotion(super::MotionDuration),
@@ -1384,6 +1405,7 @@ impl Intent {
             | Self::PreviousState
             | Self::PushHarmony(_) => &[ModeKind::Performance],
             Self::OpenStateLeader(_) | Self::OpenHarmony { .. } => &[ModeKind::Browsing],
+            Self::OpenGrab { .. } => &[ModeKind::Browsing, ModeKind::Automation],
         }
     }
 
@@ -1432,6 +1454,7 @@ impl Intent {
             | Self::PreviousState
             | Self::OpenHarmony { .. }
             | Self::PushHarmony(_)
+            | Self::OpenGrab { .. }
             | Self::EnterLeadPlay
             | Self::PlayLeadTone { .. }
             | Self::NudgeLead { .. }
@@ -1566,6 +1589,8 @@ pub(crate) enum InteractionEffect {
     Harmony(super::HarmonyAction),
     /// Set where Push the Harmony moves land, re-timing a waiting move.
     SetHarmonyQuantize(super::PushQuantize),
+    /// Make the chords pushed over the last bars the looping progression.
+    GrabHarmony(super::MotionDuration),
     /// Reset the active sequence steps on `Tab` (Pads to root, notes to rest).
     ClearSequence(Tab),
     ToggleTransport,
@@ -2020,6 +2045,15 @@ fn update_browsing(
                 leader,
             }));
         }
+        Intent::OpenGrab { harmony } => {
+            *next_mode = Some(InteractionMode::Performance(PerformanceMode::Grab {
+                target: if harmony {
+                    GrabTarget::Harmony
+                } else {
+                    GrabTarget::Knob
+                },
+            }));
+        }
         Intent::OpenHarmony { latched } => {
             *next_mode = Some(InteractionMode::Performance(PerformanceMode::Harmony {
                 latched,
@@ -2253,6 +2287,13 @@ fn update_automation(
                 stage: JumpStage::AutomationRow { mode: *automation },
             }));
         }
+        // `G` grabs the harmony, which an editor field cannot hold, so from
+        // an editor both `g` and `G` grab the selected field.
+        Intent::OpenGrab { .. } => {
+            *next_mode = Some(InteractionMode::Performance(PerformanceMode::Grab {
+                target: GrabTarget::Field(*automation),
+            }));
+        }
         Intent::OpenAutomationField => {
             if matches!(automation, AutomationMode::Lfo { .. }) {
                 *automation = AutomationMode::Lfo {
@@ -2391,6 +2432,9 @@ fn update_performance(
             PerformanceMode::Harmony { latched } => {
                 update_harmony(*latched, intent, next_mode, effects);
             }
+            PerformanceMode::Grab { target } => {
+                update_grab(*target, intent, next_mode, effects);
+            }
         },
     }
 }
@@ -2434,6 +2478,35 @@ fn update_state_leader(
     };
     effects.extend(effect);
     *next_mode = Some(InteractionMode::Browsing);
+}
+
+/// The grab leader: a digit 1, 2, 4 or 8 keeps that many bars of what the
+/// leader targets, then returns to where it was opened. Esc keeps nothing.
+fn update_grab(
+    target: GrabTarget,
+    intent: Intent,
+    next_mode: &mut Option<InteractionMode>,
+    effects: &mut Vec<InteractionEffect>,
+) {
+    let back = match target {
+        GrabTarget::Field(mode) => InteractionMode::Automation(mode),
+        GrabTarget::Knob | GrabTarget::Harmony => InteractionMode::Browsing,
+    };
+    match intent {
+        Intent::Cancel => *next_mode = Some(back),
+        Intent::GrabMotion(duration) => {
+            effects.push(match target {
+                GrabTarget::Knob => InteractionEffect::MotionGrabSelected(duration),
+                GrabTarget::Field(mode) => InteractionEffect::MotionGrabAutomationSelected {
+                    duration,
+                    selected: mode.selected(),
+                },
+                GrabTarget::Harmony => InteractionEffect::GrabHarmony(duration),
+            });
+            *next_mode = Some(back);
+        }
+        _ => {}
+    }
 }
 
 /// Push the Harmony: each key pushes the harmony (or undoes, or releases it)

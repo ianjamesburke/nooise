@@ -5,9 +5,9 @@
 
 use super::*;
 use crate::fluid::interaction::{
-    ArpDrill, AutomationKind, AutomationMode, BassDrill, ChordDrill, ClapDrill, InteractionMode,
-    InteractionModel, JumpStage, KickDrill, LEAD_NUDGES, LeadDrill, Navigation, PercDrill,
-    PerformanceInstrument, PerformanceMode, StateLeader, TonalDrill, hub_layer,
+    ArpDrill, AutomationKind, AutomationMode, BassDrill, ChordDrill, ClapDrill, GrabTarget,
+    InteractionMode, InteractionModel, JumpStage, KickDrill, LEAD_NUDGES, LeadDrill, Navigation,
+    PercDrill, PerformanceInstrument, PerformanceMode, StateLeader, TonalDrill, hub_layer,
 };
 
 /// The minimum supported frame. Every top-level and nested owner must render
@@ -27,6 +27,7 @@ pub(crate) enum KeyboardOwner {
     PerformanceJump,
     PerformanceStates,
     PerformanceHarmony,
+    PerformanceGrab,
     Lead,
     Help,
 }
@@ -42,6 +43,7 @@ impl KeyboardOwner {
             Self::PerformanceJump => "JUMP",
             Self::PerformanceStates => "STATES",
             Self::PerformanceHarmony => "HARMONY",
+            Self::PerformanceGrab => "GRAB",
             Self::Lead => "LEAD",
             Self::Help => "SHORTCUTS",
         }
@@ -334,9 +336,19 @@ impl AutomationSurface<'_> {
 /// map over the control rows while keeping the stable footer visible.
 pub(crate) enum PerformanceSurface {
     ChooseLayer,
-    ChooseParameter { instrument: PerformanceInstrument },
-    States { leader: StateLeader },
-    Harmony { latched: bool },
+    ChooseParameter {
+        instrument: PerformanceInstrument,
+    },
+    States {
+        leader: StateLeader,
+    },
+    Harmony {
+        latched: bool,
+    },
+    /// A pending `g` (knob or editor field) or `G` (pushed harmony).
+    Grab {
+        harmony: bool,
+    },
 }
 
 /// Push the Harmony as the header and its overlay show it, in letter names
@@ -816,6 +828,11 @@ fn mode_surface<'a>(
         InteractionMode::Performance(PerformanceMode::Harmony { latched }) => {
             ModeSurface::Performance(PerformanceSurface::Harmony { latched: *latched })
         }
+        InteractionMode::Performance(PerformanceMode::Grab { target }) => {
+            ModeSurface::Performance(PerformanceSurface::Grab {
+                harmony: *target == GrabTarget::Harmony,
+            })
+        }
     }
 }
 
@@ -971,6 +988,9 @@ pub(crate) fn keyboard_owner(mode: &InteractionMode) -> KeyboardOwner {
         }
         InteractionMode::Performance(PerformanceMode::Harmony { .. }) => {
             KeyboardOwner::PerformanceHarmony
+        }
+        InteractionMode::Performance(PerformanceMode::Grab { .. }) => {
+            KeyboardOwner::PerformanceGrab
         }
         InteractionMode::Lead(_) => KeyboardOwner::Lead,
         InteractionMode::Help => KeyboardOwner::Help,
@@ -1153,6 +1173,7 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
             }
             _ => unreachable!("harmony owner requires a harmony surface"),
         },
+        KeyboardOwner::PerformanceGrab => "GRAB · 1 2 4 8 bars   Esc".to_string(),
         KeyboardOwner::Help => "SHORTCUTS · Esc: close".to_string(),
     }
 }

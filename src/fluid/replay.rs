@@ -6279,3 +6279,40 @@ fn apostrophe_goes_to_layers_and_level_through_the_production_path() {
     let store_ignores_layers = replay(&[press('"'), press('d')], TerminalCapabilities::full());
     assert_eq!(store_ignores_layers.final_owner(), Some("STATES"));
 }
+
+/// `g` then a bar count grabs Motion on the selected knob, from an editor it
+/// grabs the selected field and returns there, and `G` reaches the (stubbed)
+/// harmony grab, all through the production mapper.
+#[test]
+fn g_grabs_motion_and_shift_g_reaches_the_harmony_grab() {
+    let press = |character| key(0, FixtureKey::Character(character), InputPhase::Press);
+    let knob = replay(&[press('g'), press('4')], TerminalCapabilities::full());
+    assert_eq!(knob.effect_count("MotionGrabSelected(Beats16)"), 1);
+    assert_eq!(knob.final_owner(), Some("BROWSE"));
+    let opened = replay(&[press('g')], TerminalCapabilities::full());
+    assert_eq!(opened.final_owner(), Some("GRAB"));
+    let field = replay(
+        &[press('f'), press('j'), press('g'), press('1')],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(field.effect_count("MotionGrabAutomationSelected"), 1);
+    assert_eq!(field.final_owner(), Some("LFO"));
+    for shift_g in [
+        modified_key(0, FixtureKey::Character('G'), InputPhase::Press, 1),
+        press('G'),
+    ] {
+        let harmony = replay(&[shift_g, press('2')], TerminalCapabilities::full());
+        assert_eq!(harmony.effect_count("GrabHarmony(Beats8)=>OK:NoChange"), 1);
+        assert_eq!(harmony.final_owner(), Some("BROWSE"));
+    }
+    let cancelled = replay(
+        &[
+            press('g'),
+            press('3'),
+            key(0, FixtureKey::Escape, InputPhase::Press),
+        ],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(cancelled.effect_count("Motion"), 0);
+    assert_eq!(cancelled.final_owner(), Some("BROWSE"));
+}

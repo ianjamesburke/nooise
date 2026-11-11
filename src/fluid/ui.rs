@@ -212,6 +212,9 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         ModeSurface::Performance(PerformanceSurface::Harmony { latched }) => {
             draw_harmony_leader(f, inner, &view.harmony, *latched);
         }
+        ModeSurface::Performance(PerformanceSurface::Grab { harmony }) => {
+            draw_grab_leader(f, inner, *harmony);
+        }
         ModeSurface::Performance(surface) => draw_leader(f, inner, surface),
         _ => {}
     }
@@ -1376,6 +1379,13 @@ fn draw_help(f: &mut Frame, inner: Rect) {
         ],
     ));
     lines.extend(state(
+        "Grab (then 1 / 2 / 4 / 8 bars)",
+        &[&[
+            ("g", "knob or editor field motion"),
+            ("\u{21e7}G", "pushed chords (not built)"),
+        ]],
+    ));
+    lines.extend(state(
         "Go (') and keep (\")",
         &[
             &[("' 1-9", "queue state"), ("' '", "previous state")],
@@ -1430,6 +1440,40 @@ fn leader_frame(f: &mut Frame, inner: Rect, title: &'static str, desired_height:
     let content = block.inner(area);
     f.render_widget(block, area);
     content
+}
+
+/// The grab leader: the four bar counts, and what the grab keeps.
+fn draw_grab_leader(f: &mut Frame, inner: Rect, harmony: bool) {
+    let title = if harmony { " Grab chords " } else { " Grab " };
+    let content = leader_frame(f, inner, title, 5);
+    let key_style = Style::default()
+        .fg(BROWSE_PALETTE.active)
+        .add_modifier(Modifier::BOLD);
+    let label_style = Style::default().fg(Color::Rgb(205, 210, 222));
+    let what = if harmony {
+        "the pushed chords become the loop"
+    } else {
+        "the selected knob's movement"
+    };
+    let mut bars = Vec::new();
+    for (key, label) in [
+        ("1", "bar  "),
+        ("2", "bars  "),
+        ("4", "bars  "),
+        ("8", "bars"),
+    ] {
+        bars.push(Span::styled(format!("{key} "), key_style));
+        bars.push(Span::styled(label, label_style));
+    }
+    let lines = vec![
+        Line::from(Span::styled(what, label_style)),
+        Line::from(bars),
+        Line::from(vec![
+            Span::styled("Esc  ", key_style),
+            Span::styled("Cancel", label_style),
+        ]),
+    ];
+    f.render_widget(Paragraph::new(lines).alignment(Alignment::Left), content);
 }
 
 /// Push the Harmony's overlay: the chord the next push reads, then every
@@ -1620,7 +1664,9 @@ fn draw_leader(f: &mut Frame, inner: Rect, surface: &PerformanceSurface) {
             lines.push(single("Esc", "Cancel"));
             lines
         }
-        PerformanceSurface::States { .. } | PerformanceSurface::Harmony { .. } => {
+        PerformanceSurface::States { .. }
+        | PerformanceSurface::Harmony { .. }
+        | PerformanceSurface::Grab { .. } => {
             unreachable!("state and harmony leaders render through their own overlays")
         }
         PerformanceSurface::ChooseParameter { instrument } => vec![

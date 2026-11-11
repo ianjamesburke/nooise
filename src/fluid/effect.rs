@@ -1252,6 +1252,21 @@ impl EffectExecutor {
         })
     }
 
+    /// STUB: `G` then 1/2/4/8 will make the chords pushed over that many bars
+    /// the looping progression, replacing it outright. Not built in the v4
+    /// mock: it needs a landing log and a lane that can hold any pushed triad
+    /// with its voicing and timing (ADR 0002's Cell lane). Changes nothing.
+    pub(crate) fn grab_harmony(
+        &mut self,
+        duration: MotionDuration,
+    ) -> Result<EffectAcknowledgement, EffectFailure> {
+        self.show_message(format!(
+            "Harmony grab ({} bars) is not built yet",
+            duration.beats() / 4
+        ));
+        Ok(EffectAcknowledgement::NoChange)
+    }
+
     /// Set where Push the Harmony moves land. A live play-style choice: it
     /// re-times a waiting move, never exits auto, and is not saved in songs.
     pub(crate) fn set_harmony_quantize(
@@ -1667,6 +1682,7 @@ impl EffectExecutor {
             InteractionEffect::ToggleStateQueue(index) => self.toggle_state_queue(index),
             InteractionEffect::PlanMute(tab) => self.plan_mute(tab, context.beat),
             InteractionEffect::Harmony(action) => self.push_harmony(action, context.beat),
+            InteractionEffect::GrabHarmony(duration) => self.grab_harmony(duration),
             InteractionEffect::SetHarmonyQuantize(quantize) => {
                 self.set_harmony_quantize(quantize, context.beat)
             }
@@ -1829,6 +1845,7 @@ impl EffectExecutor {
             InteractionEffect::ToggleStateQueue(index) => self.toggle_state_queue(index),
             InteractionEffect::PlanMute(tab) => self.plan_mute(tab, context.beat),
             InteractionEffect::Harmony(action) => self.push_harmony(action, context.beat),
+            InteractionEffect::GrabHarmony(duration) => self.grab_harmony(duration),
             InteractionEffect::SetHarmonyQuantize(quantize) => {
                 self.set_harmony_quantize(quantize, context.beat)
             }
