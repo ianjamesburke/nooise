@@ -41,7 +41,7 @@
   layers, each showing its level and opening that layer on Enter; Master's
   own controls follow. Tab reaches it after Lead, and Esc from a layer's
   root returns to it on that layer's row.
-- **State leader:** a pending `'` or `"` that waits for one digit `1`-`9` naming a stored-state slot. `'` queues that state (a second `'` queues the previous one) and `"` stores the current song there, replacing any stored one. It opens only from browsing, acts on key presses, and leaves physical holds running.
+- **State leader:** a pending `'` or `"` that waits for one digit `1`-`9` naming a stored-state slot. `'` is go: a digit queues that state (a second `'` queues the previous one), a layer key opens that layer, `j`/`k` reach Level/Filter on the open page, and `"` stores the current song there, replacing any stored one. It opens only from browsing, acts on key presses, and leaves physical holds running.
 - **State (stored state):** one numbered slot, 1-9, in the state bank. It
   holds a whole song snapshot (controls and automation) that the performer
   stored from the live song and recalls with the State leader or `/queue state

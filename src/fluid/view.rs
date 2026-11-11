@@ -1137,8 +1137,8 @@ fn owner_help(owner: KeyboardOwner, mode: &ModeSurface<'_>) -> String {
         },
         KeyboardOwner::PerformanceStates => match mode {
             ModeSurface::Performance(PerformanceSurface::States {
-                leader: StateLeader::Queue,
-            }) => "STATES · 1-9 queue   ' previous   Esc".to_string(),
+                leader: StateLeader::Go,
+            }) => "GO · 1-9 queue  ' prev  layers  j k  Esc".to_string(),
             ModeSurface::Performance(PerformanceSurface::States {
                 leader: StateLeader::Store,
             }) => "STATES · 1-9 store   Esc".to_string(),
@@ -1742,24 +1742,26 @@ mod tests {
             filled[index] = true;
         }
         let frame = render_states_leader(
-            StateLeader::Queue,
+            StateLeader::Go,
             &marked_session(),
             filled,
             MIN_TERMINAL_WIDTH,
             MIN_TERMINAL_HEIGHT,
         );
         for text in [
-            "Queue␠state",
+            "Go",
             "1␠filled",
             "2␠now",
             "3␠empty",
             "5␠next",
             "8␠filled",
             "9␠empty",
-            "1-9␠Queue",
-            "'␠Previous",
-            "Esc␠␠Cancel",
-            "STATES␠·␠1-9␠queue",
+            "a␠Pads",
+            "r␠Master",
+            "j␠level",
+            "k␠filter",
+            "'␠previous",
+            "GO␠·␠1-9␠queue",
         ] {
             assert!(frame.contains(text), "missing {text:?}:\n{frame}");
         }
@@ -1779,7 +1781,7 @@ mod tests {
             assert!(frame.contains(text), "missing {text:?}:\n{frame}");
         }
         assert!(!frame.contains("Queue"), "{frame}");
-        for leader in [StateLeader::Queue, StateLeader::Store] {
+        for leader in [StateLeader::Go, StateLeader::Store] {
             let mut session = marked_session();
             session.current_state = session.pending_state.as_ref().map(|p| p.index);
             let frame = render_states_leader(
@@ -1796,7 +1798,7 @@ mod tests {
     #[test]
     fn state_leader_footers_fit_the_minimum_frame() {
         let session = session();
-        for leader in [StateLeader::Queue, StateLeader::Store] {
+        for leader in [StateLeader::Go, StateLeader::Store] {
             let mode = InteractionMode::Performance(PerformanceMode::States { leader });
             let line = owner_help(
                 KeyboardOwner::PerformanceStates,

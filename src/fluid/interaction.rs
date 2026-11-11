@@ -866,11 +866,13 @@ pub(crate) enum JumpStage {
     },
 }
 
-/// What the digit does once a state leader is pending: queue that state
-/// (`'`), or store the current song into it (`"`).
+/// The two leaders on the `'` key. `'` is "go": a digit queues that state,
+/// a second `'` the previous one, a layer key opens that layer and `j`/`k`
+/// reach Level/Filter on the open page. `"` is "keep": a digit stores the
+/// current song into that state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StateLeader {
-    Queue,
+    Go,
     Store,
 }
 
@@ -2384,7 +2386,7 @@ fn update_performance(
                 update_jump(stage, navigation, layer_rows, intent, next_mode, effects);
             }
             PerformanceMode::States { leader } => {
-                update_state_leader(*leader, intent, next_mode, effects);
+                update_state_leader(*leader, navigation, layer_rows, intent, next_mode, effects);
             }
             PerformanceMode::Harmony { latched } => {
                 update_harmony(*latched, intent, next_mode, effects);
@@ -2393,24 +2395,39 @@ fn update_performance(
     }
 }
 
-/// The state leaders: `'` queues and `"` stores. The digit names the slot
-/// and completes the leader; Esc leaves it with no effect. Every route acts
-/// on a Press edge, and a physical hold stays running throughout.
+/// The state leaders: `'` goes (a state, a layer, Level or Filter) and `"`
+/// stores. One key completes the leader; Esc leaves it with no effect. Every
+/// route acts on a Press edge, and a physical hold stays running throughout.
 fn update_state_leader(
     leader: StateLeader,
+    navigation: &mut Navigation,
+    layer_rows: &LayerRows,
     intent: Intent,
     next_mode: &mut Option<InteractionMode>,
     effects: &mut Vec<InteractionEffect>,
 ) {
     let effect = match (leader, intent) {
         (_, Intent::Cancel) => None,
-        (StateLeader::Queue, Intent::ChooseState(index)) => {
+        (StateLeader::Go, Intent::SelectPerformanceInstrument { instrument }) => {
+            let page = instrument.page();
+            *navigation = layer_rows.open(page);
+            Some(InteractionEffect::SelectPage(page))
+        }
+        (StateLeader::Go, Intent::JumpToParameter(parameter)) => {
+            // No address to move to: stay in the leader rather than dropping
+            // the player somewhere they did not ask for.
+            let Some(effect) = jump_effect(navigation.tab(), parameter) else {
+                return;
+            };
+            Some(effect)
+        }
+        (StateLeader::Go, Intent::ChooseState(index)) => {
             Some(InteractionEffect::ToggleStateQueue(index))
         }
         (StateLeader::Store, Intent::ChooseState(index)) => {
             Some(InteractionEffect::State(super::StateAction::Store(index)))
         }
-        (StateLeader::Queue, Intent::PreviousState) => {
+        (StateLeader::Go, Intent::PreviousState) => {
             Some(InteractionEffect::State(super::StateAction::Previous))
         }
         _ => return,
@@ -3461,7 +3478,7 @@ mod tests {
 
     #[test]
     fn state_leaders_open_only_from_browsing_and_hold_their_kind() {
-        for leader in [StateLeader::Queue, StateLeader::Store] {
+        for leader in [StateLeader::Go, StateLeader::Store] {
             let opened = update(InteractionModel::default(), Intent::OpenStateLeader(leader));
             assert!(opened.effects.is_empty());
             assert_eq!(
@@ -3471,7 +3488,7 @@ mod tests {
             // A second open, or a Jump open, leaves a pending leader alone.
             for intent in [
                 Intent::OpenStateLeader(StateLeader::Store),
-                Intent::OpenStateLeader(StateLeader::Queue),
+                Intent::OpenStateLeader(StateLeader::Go),
                 Intent::ActivatePerformance(PerformanceKind::Jump),
             ] {
                 let again = update(opened.model.clone(), intent);
@@ -3496,10 +3513,10 @@ mod tests {
 
     #[test]
     fn queue_leader_digit_previous_and_escape_return_to_browsing() {
-        let digit = update(open_leader(StateLeader::Queue), Intent::ChooseState(3));
+        let digit = update(open_leader(StateLeader::Go), Intent::ChooseState(3));
         assert_eq!(digit.model.mode, InteractionMode::Browsing);
         assert_eq!(digit.effects, vec![InteractionEffect::ToggleStateQueue(3)]);
-        let previous = update(open_leader(StateLeader::Queue), Intent::PreviousState);
+        let previous = update(open_leader(StateLeader::Go), Intent::PreviousState);
         assert_eq!(previous.model.mode, InteractionMode::Browsing);
         assert_eq!(
             previous.effects,
@@ -3507,7 +3524,7 @@ mod tests {
                 super::super::StateAction::Previous
             )]
         );
-        let cancelled = update(open_leader(StateLeader::Queue), Intent::Cancel);
+        let cancelled = update(open_leader(StateLeader::Go), Intent::Cancel);
         assert_eq!(cancelled.model.mode, InteractionMode::Browsing);
         assert!(cancelled.effects.is_empty());
     }
@@ -3542,19 +3559,52 @@ mod tests {
             assert_eq!(result.model, jump);
             assert!(result.effects.is_empty());
         }
+        for intent in [Intent::PlanMute, Intent::GrabMotion(MotionDuration::Beats4)] {
+            let leader = open_leader(StateLeader::Go);
+            let result = update(leader.clone(), intent);
+            assert_eq!(result.model, leader);
+            assert!(result.effects.is_empty());
+        }
+        // Layer and Level/Filter keys are go's alone: `"` ignores them.
         for intent in [
-            Intent::PlanMute,
-            Intent::GrabMotion(MotionDuration::Beats4),
             Intent::JumpToParameter(PerformanceParameter::Volume),
             Intent::SelectPerformanceInstrument {
                 instrument: PerformanceInstrument::Pads,
             },
         ] {
-            let leader = open_leader(StateLeader::Queue);
+            let leader = open_leader(StateLeader::Store);
             let result = update(leader.clone(), intent);
             assert_eq!(result.model, leader);
             assert!(result.effects.is_empty());
         }
+    }
+
+    /// `'` then a layer key opens that layer and hands back to browsing;
+    /// `'` then `j`/`k` reaches Level/Filter on the open page.
+    #[test]
+    fn go_reaches_layers_and_the_open_pages_level_and_filter() {
+        let opened = update(
+            open_leader(StateLeader::Go),
+            Intent::SelectPerformanceInstrument {
+                instrument: PerformanceInstrument::Bass,
+            },
+        );
+        assert_eq!(opened.model.mode, InteractionMode::Browsing);
+        assert_eq!(opened.model.navigation.page(), Page::Bass);
+        assert_eq!(
+            opened.effects,
+            vec![InteractionEffect::SelectPage(Page::Bass)]
+        );
+        let filter = update(opened.model, Intent::OpenStateLeader(StateLeader::Go));
+        let filter = update(
+            filter.model,
+            Intent::JumpToParameter(PerformanceParameter::Filter),
+        );
+        assert_eq!(filter.model.mode, InteractionMode::Browsing);
+        assert_eq!(
+            filter.effects,
+            vec![InteractionEffect::PlaceFilterCutoff { tab: Tab::Bass }]
+        );
     }
 
     /// Only the state leaders keep a physical hold running. Jump, the
@@ -3584,7 +3634,7 @@ mod tests {
             );
             assert!(!result.model.gesture_input.has_active(), "{intent:?}");
         }
-        for leader in [StateLeader::Queue, StateLeader::Store] {
+        for leader in [StateLeader::Go, StateLeader::Store] {
             let opened = update(held(), Intent::OpenStateLeader(leader));
             assert!(opened.effects.is_empty());
             assert!(opened.model.gesture_input.has_active());

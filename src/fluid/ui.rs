@@ -1376,9 +1376,14 @@ fn draw_help(f: &mut Frame, inner: Rect) {
         ],
     ));
     lines.extend(state(
-        "States (' queue, \" store)",
+        "Go (') and keep (\")",
         &[
             &[("' 1-9", "queue state"), ("' '", "previous state")],
+            &[
+                ("' a s d f", "pads perc bass kick"),
+                ("' q w e r", "tonal clap arp hub"),
+            ],
+            &[("' j / ' k", "level / filter here")],
             &[
                 ("\" 1-9", "store here (replaces)"),
                 ("' same", "cancel queue"),
@@ -1482,11 +1487,11 @@ fn draw_harmony_leader(f: &mut Frame, inner: Rect, harmony: &HarmonyView, latche
 /// The pending `'` or `"` leader: slots 1-9 in three rows, each marked empty
 /// or filled, with the playing and queued states called out.
 fn draw_state_leader(f: &mut Frame, inner: Rect, view: &UiViewModel<'_>, leader: StateLeader) {
-    let (title, hint) = match leader {
-        StateLeader::Queue => (" Queue state ", "1-9 Queue   ' Previous"),
-        StateLeader::Store => (" Store state ", "1-9 Store here (replaces)"),
+    let (title, height) = match leader {
+        StateLeader::Go => (" Go ", 8),
+        StateLeader::Store => (" Store state ", 7),
     };
-    let content = leader_frame(f, inner, title, 7);
+    let content = leader_frame(f, inner, title, height);
     let queued = view.session.pending_state.as_ref().map(|p| p.index);
     let key_style = Style::default()
         .fg(BROWSE_PALETTE.active)
@@ -1521,14 +1526,48 @@ fn draw_state_leader(f: &mut Frame, inner: Rect, view: &UiViewModel<'_>, leader:
             )
         })
         .collect();
-    lines.push(Line::from(Span::styled(
-        hint,
-        Style::default().fg(Color::Rgb(205, 210, 222)),
-    )));
-    lines.push(Line::from(vec![
-        Span::styled("Esc  ", key_style),
-        Span::styled("Cancel", Style::default().fg(Color::Rgb(205, 210, 222))),
-    ]));
+    let label_style = Style::default().fg(Color::Rgb(205, 210, 222));
+    let keyed = |pairs: &[(String, &str)]| {
+        Line::from(
+            pairs
+                .iter()
+                .flat_map(|(key, label)| {
+                    [
+                        Span::styled(format!("{key} "), key_style),
+                        Span::styled(format!("{label}  "), label_style),
+                    ]
+                })
+                .collect::<Vec<_>>(),
+        )
+    };
+    match leader {
+        StateLeader::Go => {
+            // The layer keys read `INSTRUMENTS`, so this map cannot drift.
+            for half in [&INSTRUMENTS[..4], &INSTRUMENTS[4..]] {
+                let pairs: Vec<(String, &str)> = half
+                    .iter()
+                    .map(|row| (row.key.to_string(), row.instrument.name()))
+                    .collect();
+                lines.push(keyed(&pairs));
+            }
+            lines.push(keyed(&[
+                (PARAMETERS[0].key.to_string(), "level"),
+                (PARAMETERS[1].key.to_string(), "filter"),
+                ("'".to_string(), "previous"),
+                ("Esc".to_string(), ""),
+            ]));
+        }
+        StateLeader::Store => {
+            lines.push(Line::from(Span::styled(
+                "1-9 Store here (replaces)",
+                label_style,
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("Esc  ", key_style),
+                Span::styled("Cancel", label_style),
+            ]));
+        }
+    }
     f.render_widget(Paragraph::new(lines).alignment(Alignment::Left), content);
 }
 

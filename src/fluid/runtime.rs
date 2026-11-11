@@ -720,22 +720,31 @@ fn state_leader_key(key: &TransportKey) -> Option<StateLeader> {
     let unmodified = key.modifiers == Modifiers::default();
     let shifted = key.modifiers == Modifiers::SHIFT;
     match character {
-        '\'' if unmodified => Some(StateLeader::Queue),
+        '\'' if unmodified => Some(StateLeader::Go),
         '\'' if shifted => Some(StateLeader::Store),
         '"' if unmodified || shifted => Some(StateLeader::Store),
         _ => None,
     }
 }
 
-/// A pending state leader's keyboard: a digit `1`-`9` names the slot, and
-/// `'` is the queue leader's "previous" gesture. Every other key is inert.
+/// A pending state leader's keyboard: a digit `1`-`9` names the slot, `'`
+/// is go's "previous", an `INSTRUMENTS` key opens that layer and a
+/// `PARAMETERS` key reaches Level/Filter on the open page. The digit, `'`,
+/// layer and parameter key sets are disjoint; the kernel ignores the go-only
+/// keys under `"`. Every other key is inert.
 fn state_leader_binding(code: &PhysicalKey) -> Option<Intent> {
-    match *code {
-        PhysicalKey::Character('\'') => Some(Intent::PreviousState),
-        PhysicalKey::Character(digit @ '1'..='9') => {
-            Some(Intent::ChooseState(digit as usize - '1' as usize))
-        }
-        _ => None,
+    let PhysicalKey::Character(key) = *code else {
+        return None;
+    };
+    match key {
+        '\'' => Some(Intent::PreviousState),
+        '1'..='9' => Some(Intent::ChooseState(key as usize - '1' as usize)),
+        _ => PerformanceParameter::from_key(key)
+            .map(Intent::JumpToParameter)
+            .or_else(|| {
+                PerformanceInstrument::from_key(key)
+                    .map(|instrument| Intent::SelectPerformanceInstrument { instrument })
+            }),
     }
 }
 
@@ -1874,7 +1883,7 @@ mod tests {
                     capabilities,
                 )
             };
-            assert_eq!(map('\'', Modifiers::default()), open(StateLeader::Queue));
+            assert_eq!(map('\'', Modifiers::default()), open(StateLeader::Go));
             // The shifted glyph, with no modifier bit reported.
             assert_eq!(map('"', Modifiers::default()), open(StateLeader::Store));
             // The shifted glyph, with SHIFT reported alongside it.
@@ -1937,7 +1946,7 @@ mod tests {
     #[test]
     fn pending_state_leaders_read_digits_and_the_queue_leader_reads_apostrophe() {
         let capabilities = TerminalCapabilities::full();
-        for leader in [StateLeader::Queue, StateLeader::Store] {
+        for leader in [StateLeader::Go, StateLeader::Store] {
             let mode = InteractionMode::Performance(PerformanceMode::States { leader });
             for (offset, digit) in ('1'..='9').enumerate() {
                 assert_eq!(
@@ -1945,7 +1954,21 @@ mod tests {
                     InputMapping::Action(SemanticAction::press(Intent::ChooseState(offset)))
                 );
             }
-            for ignored in ['0', 'a', ' ', 'm', '"'] {
+            // Go-only layer and Level/Filter keys map under either leader;
+            // the kernel ignores them under `"`.
+            assert_eq!(
+                state_map(&mode, 'a', Modifiers::default(), capabilities),
+                InputMapping::Action(SemanticAction::press(Intent::SelectPerformanceInstrument {
+                    instrument: PerformanceInstrument::Pads
+                }))
+            );
+            assert_eq!(
+                state_map(&mode, 'k', Modifiers::default(), capabilities),
+                InputMapping::Action(SemanticAction::press(Intent::JumpToParameter(
+                    PerformanceParameter::Filter
+                )))
+            );
+            for ignored in ['0', ' ', 'm', 'z', '"'] {
                 assert_eq!(
                     state_map(&mode, ignored, Modifiers::default(), capabilities),
                     InputMapping::Ignored,

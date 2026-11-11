@@ -6261,3 +6261,21 @@ fn the_palette_sets_the_quantize_and_the_overlay_shows_it() {
     assert!(frame.contains("quantize 2 bars"), "{frame}");
     assert!(frame.contains("Em in 2 bars"), "{frame}");
 }
+
+/// `'` is go: a layer key opens that layer, `j` reaches its Level, and the
+/// digits still queue states, all through the production mapper.
+#[test]
+fn apostrophe_goes_to_layers_and_level_through_the_production_path() {
+    let press = |character| key(0, FixtureKey::Character(character), InputPhase::Press);
+    let bass = replay(&[press('\''), press('d')], TerminalCapabilities::full());
+    assert!(matches!(bass.model.navigation, Navigation::Bass { .. }));
+    assert_eq!(bass.final_owner(), Some("BROWSE"));
+    let level = replay(
+        &[press('\''), press('d'), press('\''), press('j')],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(level.effect_count("JumpToControl { tab: Bass"), 1);
+    assert_eq!(level.final_owner(), Some("BROWSE"));
+    let store_ignores_layers = replay(&[press('"'), press('d')], TerminalCapabilities::full());
+    assert_eq!(store_ignores_layers.final_owner(), Some("STATES"));
+}

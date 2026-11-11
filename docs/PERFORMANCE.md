@@ -6,9 +6,11 @@ A bank holds nine numbered states, 1 through 9. Store, recall and cancel
 each have a two-key gesture from ordinary browsing and a `/` operation, so the
 keyboard path never needs a typed command.
 
-`'` (apostrophe) opens the Queue leader. A digit `1`-`9` queues that state.
-The digit of the state already queued cancels the queue, the same toggle feel
-as `Space m`. A second `'` queues the previous state: the one that was
+`'` (apostrophe) is go. A digit `1`-`9` queues that state. The digit of the
+state already queued cancels the queue. A layer key opens that layer at its
+remembered row (`a` Pads, `s` Perc, `d` Bass, `f` Kick, `q` Tonal, `w` Clap,
+`e` Arp, `r` the hub), and `j`/`k` put the cursor on Level/Filter of the page
+already open. A second `'` queues the previous state: the one that was
 current before the most recent landing, so `''` goes back and, repeated,
 alternates between two states. With no previous state it says so and
 returns to browsing.
@@ -23,7 +25,7 @@ both open only from browsing: in the palette, numeric entry, or an editor,
 glyph alone, the glyph with Shift, or `'` with Shift; all three open the Store
 leader. A compact overlay lists slots 1-9, each marked `empty` or `filled`,
 with `now` on the current state and `next` on the queued one, a title
-saying `Queue state` or `Store state`, and `Esc Cancel`.
+saying `Go` or `Store state`; go also lists its layer keys and `j`/`k`.
 
 The same operations are reachable through `/`: `/store state 1` to `9`,
 `/queue state 1` to `9`, `/queue next state` (the next filled slot in number
