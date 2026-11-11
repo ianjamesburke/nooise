@@ -12,6 +12,34 @@ using the neo-Riemannian P, L and R swaps plus diatonic steps and fifths. You
 steer by feel, it is impossible to play wrong, every key sits on the home row,
 and it works with eyes closed.
 
+## Against the North Star posture
+
+The owner's "video game engine of music generators" posture (`docs/NORTH_STAR.md`,
+committed as 19d527d on `temp-show-marks` after this branch was cut, so not in
+this branch's copy) names Push the Harmony as its example. How this mock-up
+scores against each preference:
+
+- **Moves, not set values or prepared material.** Every key is relative to
+  the chord sounding now; nothing is named, chosen from a list, or authored
+  ahead. Release returns to the prepared progression, but only as an exit.
+- **Cannot be played wrong.** Every move key always produces a chord: the
+  diminished P/L/R neighbours exist so no key is a dead end, and every chord
+  stays inside MIDI 40-79. `u` with nothing to undo and `g` with nothing pushed
+  say so and change nothing.
+- **Rewards practice.** Moves chain before the bar (`l l`, `f d`), so speed
+  buys bigger moves per bar. Voice leading is deterministic: the same chain
+  from the same chord always sounds the same, which is what lets it become
+  muscle memory. Undo makes a wrong chain cheap to recover from.
+- **Eyes-closed, home row, each key always means the same thing.** All eight
+  moves sit on the home row and mean the same thing every time inside the
+  mode, and `c` then a key is always the same two-key move. Open tension: the
+  same letters mean other things in browsing (`hjkl` move and adjust, `a`
+  vamps, `u` randomizes the selected knob), so the meaning depends on the
+  mode. The approved design accepts this. The latched mode is where it
+  matters most, since you have to remember you are in it.
+- **Prepare more, play less?** No setup is needed: no chord bank, no key
+  choice. The latch adds one mode to keep track of; the one-shot `c` does not.
+
 ## Keys
 
 `c` in Browsing opens the mode for one move, then returns to Browsing.
