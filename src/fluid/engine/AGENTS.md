@@ -7,6 +7,7 @@ Audio processing helpers owned by `../engine.rs`.
 ## Ownership
 
 - `gesture_audio.rs` owns the Master-bus gesture stage, parallel effect returns, and their bounded runtime storage.
+- `perf_probe.rs` is the ignored audio-thread cost probe: ordinary versus bar-crossing buffer time, steady CPU share, and heap traffic under UI edits.
 - `../engine.rs` owns voice/Master routing (gestures run after Master's slot chain, before the master bus), clock publication, and session reads.
 - `../gesture.rs` owns the gesture vocabulary and scalar envelopes; shared effect algorithms remain in `../../fx/`.
 
@@ -29,6 +30,7 @@ Audio processing helpers owned by `../engine.rs`.
 - `cargo test fluid::engine::gesture_audio` covers temporary processing.
 - `cargo test fluid::gesture_audio_tests` covers raw terminal input through rendered audio and saves.
 - `cargo test fluid::gesture_level_probe` renders a full Bloom+Echo+Submerge throw at real playback level through the whole engine and requires zero clamp hits and a peak under 0.6; the clamp is the backstop, never the fix.
+- `cargo test --release engine_perf_probe -- --ignored --nocapture --test-threads=1` prints per-buffer render cost; record `uptime` beside it, since timings are wall-clock.
 - `cargo test --release gesture_level_probe -- --ignored --nocapture` prints real-level peak, clamp hits, and low/mid/high band deltas per song and gesture.
 
 ## Child DOX Index

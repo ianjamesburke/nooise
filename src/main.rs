@@ -8,6 +8,8 @@ use std::path::PathBuf;
 use std::process::Command;
 use update_check::check_for_update;
 
+#[cfg(test)]
+mod alloc_count;
 mod audio;
 mod fluid;
 mod fx;

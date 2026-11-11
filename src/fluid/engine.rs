@@ -17,6 +17,8 @@ use crate::fx::reverb::{FdnReverb, ReverbParams};
 use super::*;
 
 mod gesture_audio;
+#[cfg(test)]
+mod perf_probe;
 
 use gesture_audio::GestureAudioBank;
 
@@ -686,7 +688,6 @@ pub(crate) struct FluidEngine {
     /// The UI publishes planned actions ahead of time; audio owns their exact
     /// boundary so an onset never sees the previous mute state.
     planned: Option<PlannedAction>,
-    pending_state: Option<PendingState>,
     state_landed_sample: Option<u64>,
     /// The beat a queued state lands on, while one is queued.
     state_end_beat: Option<f64>,
@@ -726,7 +727,11 @@ pub(crate) struct FluidEngine {
     /// Allocation-free per-sample plan, rebuilt only when aggregate
     /// session identity changes, without comparing or cloning automation maps.
     plan: AutomationPlan,
-    plan_source: Arc<LiveSessionSnapshot>,
+    /// The published generation this engine has observed: its only retained
+    /// session reference.
+    observed: Arc<LiveSessionSnapshot>,
+    /// `observed` changed since its state was last applied to the engine.
+    observed_unapplied: bool,
     effective: FluidControls,
     authored_muted: MuteState,
     module_timing: ModuleTimingPlan,
@@ -759,9 +764,8 @@ impl FluidEngine {
             initial_pad.chord_count = 1.0;
             initial_pad.chord_offset = f32::from(vamp.slot);
         }
-        let plan_source = Arc::clone(&live);
         let mut plan = AutomationPlan::default();
-        plan.rebuild(&plan_source.automation);
+        plan.rebuild(&live.automation);
         Self {
             current_sample: 0,
             sample_rate,
@@ -777,7 +781,6 @@ impl FluidEngine {
                 holds
             },
             planned: live.planned,
-            pending_state: live.pending_state.clone(),
             state_landed_sample: None,
             state_end_beat: None,
             state_gain: 1.0,
@@ -846,7 +849,8 @@ impl FluidEngine {
             transport_restart: live.transport_restart,
             awaiting_initial_play: live.transport == Transport::Stopped,
             plan,
-            plan_source,
+            observed: live,
+            observed_unapplied: false,
         }
     }
 
@@ -964,8 +968,11 @@ impl FluidEngine {
 
 impl StereoEngine for FluidEngine {
     fn next_stereo(&mut self) -> (f32, f32) {
+        // Every publication reaches the engine on the next sample, so a
+        // command arriving at any moment still lands on its boundary.
+        self.observe_published();
         if self.awaiting_initial_play {
-            if self.session.load().transport == Transport::Stopped {
+            if self.observed.transport == Transport::Stopped {
                 return (0.0, 0.0);
             }
             self.awaiting_initial_play = false;
@@ -976,11 +983,8 @@ impl StereoEngine for FluidEngine {
         // it exactly as they move the phrase. `tempo.beat` is already the beat
         // this sample's pad tick will use, so landing here is before the
         // crossing, never a sample after it.
-        // The queue is read from the session every sample, not on the control
-        // tick: a phrase end is not bar-aligned, and a state queued a few
-        // samples before it must still land on it.
-        self.pending_state = self.session.load().pending_state.clone();
         self.state_end_beat = self
+            .observed
             .pending_state
             .as_ref()
             .and_then(|_| self.phrase_end_now());
@@ -989,39 +993,33 @@ impl StereoEngine for FluidEngine {
             && self
                 .state_end_beat
                 .is_some_and(|end| self.tempo.beat + GRID_BEAT_EPSILON >= end);
-        let landed = if state_due {
-            let pending = self.pending_state.take().unwrap();
-            let landed = self.session.land_state(
-                &pending,
-                self.current_sample as f64 / f64::from(self.sample_rate),
-            );
-            if landed {
-                self.morph.store(Arc::new(None));
-                self.state_landed_sample = Some(self.current_sample);
-            }
-            landed
-        } else {
-            false
-        };
-        // ~2.9 ms at 44.1 kHz: control edits reach the engine within a frame.
+        let landed = state_due
+            && self.observed.pending_state.as_ref().is_some_and(|pending| {
+                self.session.land_state(
+                    pending,
+                    self.current_sample as f64 / f64::from(self.sample_rate),
+                )
+            });
+        if landed {
+            self.morph.store(Arc::new(None));
+            self.state_landed_sample = Some(self.current_sample);
+            self.observe_published();
+        }
+        let restarting =
+            self.observed_unapplied && self.transport_restart != self.observed.transport_restart;
+        if restarting {
+            self.transport_restart = self.observed.transport_restart;
+            self.restart_sequence();
+        }
+        // ~2.9 ms at 44.1 kHz: the clock and the auto morph advance on this
+        // cadence; session state is applied on change, never polled.
         let morph_boundary = self
             .morph
             .load()
             .as_ref()
             .as_ref()
             .is_some_and(|morph| self.morph_writer.boundary_due(morph, self.tempo.beat));
-        // Inspect newly queued work on every sample near a bar: a command
-        // arriving between ordinary control ticks must still reach that bar.
-        let until_bar = 4.0 - self.tempo.beat.rem_euclid(4.0);
-        let probe_beats = 128.0 * self.tempo.bpm / (60.0 * f64::from(self.sample_rate));
-        let near_bar = until_bar <= probe_beats;
-        if self.current_sample.is_multiple_of(128) || morph_boundary || state_due || near_bar {
-            let live = self.session.load();
-            let restarting = self.transport_restart != live.transport_restart;
-            if restarting {
-                self.transport_restart = live.transport_restart;
-                self.restart_sequence();
-            }
+        if self.current_sample.is_multiple_of(128) || morph_boundary || landed || restarting {
             self.session.publish_audio_beat(self.tempo.beat);
             self.session
                 .publish_audio_phrase_start(self.pad.cursor.phrase_start_beat());
@@ -1040,25 +1038,7 @@ impl StereoEngine for FluidEngine {
                     snapshot.automation = next_automation.clone();
                     Ok(())
                 });
-            }
-            let session = self.session.load();
-            if landed {
-                self.tonal.restore_sequence(&session.tonal_sequence);
-            }
-            self.snapshot = session.controls.clone();
-            self.effective.clone_from(&self.snapshot);
-            if restarting {
-                self.pad.restart_sequence(&self.snapshot.pad);
-            }
-            self.gesture_snapshot = session.gestures.clone();
-            self.drunken_phase_beat = session.drunken_phase_beat;
-            self.transport = session.transport;
-            self.control_smoothers
-                .set_targets(&self.snapshot, self.sample_rate);
-            if landed {
-                self.tempo.bpm = f64::from(self.snapshot.master.bpm);
-                self.control_smoothers
-                    .settle("master.bpm", self.snapshot.master.bpm);
+                self.observe_published();
             }
             if morph_boundary
                 && morph_source
@@ -1066,32 +1046,23 @@ impl StereoEngine for FluidEngine {
                     .as_ref()
                     .is_some_and(|morph| morph.position_at(self.tempo.beat).blend.is_none())
             {
+                self.apply_observed(landed, restarting);
                 // Restore both dropped layers for the first landing note.
                 // Kick also captures Level when the hit is constructed.
-                self.control_smoothers
-                    .settle("kick.level", self.snapshot.kick.level);
-                self.control_smoothers
-                    .settle("bass.level", self.snapshot.bass.level);
-            }
-            self.authored_muted = session.muted;
-            self.planned = session.planned;
-            self.pending_state = session.pending_state.clone();
-            self.hold_muted = session.hold_muted;
-            self.hold_muted[HoldMute::KickAndBass as usize] |= session.kick_bass_latched;
-            if self.vamp != session.vamp {
-                self.vamp = session.vamp;
-            }
-            let muted = self.planned_mute_state(self.tempo.beat, self.tempo.bpm, session.muted);
-            self.mute_gates.set_targets(&muted, self.sample_rate);
-            self.muted = muted;
-            self.lead.observe(session.lead_play);
-            self.master_bus
-                .set_controls(&self.snapshot.master, self.sample_rate);
-            if !Arc::ptr_eq(&session, &self.plan_source) {
-                self.plan.rebuild(&session.automation);
-                self.plan_source = Arc::clone(&session);
+                let smoothers = &mut self.control_smoothers;
+                smoothers.settle(
+                    smoothers.kick_level,
+                    self.snapshot.kick.level,
+                    &mut self.effective,
+                );
+                smoothers.settle(
+                    smoothers.bass_level,
+                    self.snapshot.bass.level,
+                    &mut self.effective,
+                );
             }
         }
+        self.apply_observed(landed, restarting);
 
         let fade = startup_fade(self.current_sample, self.sample_rate);
         self.control_smoothers.apply(&mut self.effective);
@@ -1377,6 +1348,59 @@ impl StereoEngine for FluidEngine {
 }
 
 impl FluidEngine {
+    /// Adopt a newer published generation, if there is one.
+    fn observe_published(&mut self) -> bool {
+        let published = self.session.published();
+        if Arc::ptr_eq(&published, &self.observed) {
+            return false;
+        }
+        self.observed = arc_swap::Guard::into_inner(published);
+        self.observed_unapplied = true;
+        true
+    }
+
+    /// Derive the engine's working state from `observed` once per change.
+    fn apply_observed(&mut self, landed: bool, restarting: bool) {
+        if !self.observed_unapplied {
+            return;
+        }
+        self.observed_unapplied = false;
+        // A second handle so fields of `self` can be written while reading it;
+        // `observed` keeps the generation alive, so this drop never frees.
+        let session = Arc::clone(&self.observed);
+        if landed {
+            self.tonal.restore_sequence(&session.tonal_sequence);
+        }
+        self.snapshot.clone_from(&session.controls);
+        self.effective.clone_from(&self.snapshot);
+        if restarting {
+            self.pad.restart_sequence(&self.snapshot.pad);
+        }
+        self.gesture_snapshot.clone_from(&session.gestures);
+        self.drunken_phase_beat = session.drunken_phase_beat;
+        self.transport = session.transport;
+        self.control_smoothers
+            .set_targets(&self.snapshot, self.sample_rate);
+        if landed {
+            // Tempo is a Timing row with no smoother: the clock takes it at once.
+            self.tempo.bpm = f64::from(self.snapshot.master.bpm);
+        }
+        self.authored_muted = session.muted;
+        self.planned = session.planned;
+        self.hold_muted = session.hold_muted;
+        self.hold_muted[HoldMute::KickAndBass as usize] |= session.kick_bass_latched;
+        if self.vamp != session.vamp {
+            self.vamp = session.vamp;
+        }
+        let muted = self.planned_mute_state(self.tempo.beat, self.tempo.bpm, session.muted);
+        self.mute_gates.set_targets(&muted, self.sample_rate);
+        self.muted = muted;
+        self.lead.observe(session.lead_play);
+        self.master_bus
+            .set_controls(&self.snapshot.master, self.sample_rate);
+        self.plan.rebuild(&session.automation);
+    }
+
     /// Start the existing click-free gate early enough that it reaches its
     /// target on the downbeat, then publish the audible state on that sample.
     fn advance_planned_mute(&mut self, timing: TimingContext) {
@@ -1391,7 +1415,7 @@ impl FluidEngine {
             return;
         }
         let action = PlannedAction::Mute { tab, target_beat };
-        let session = self.session.load();
+        let session = Arc::clone(&self.observed);
         if session.planned != Some(action) {
             self.planned = session.planned;
             let boundary_muted = self.planned_mute_state(timing.beat, timing.bpm, session.muted);
@@ -1422,9 +1446,11 @@ impl FluidEngine {
             Ok(snapshot) => {
                 self.planned = None;
                 self.muted = self.planned_mute_state(timing.beat, timing.bpm, snapshot.muted);
+                self.observe_published();
             }
             Err(()) => {
-                let session = self.session.load();
+                self.observe_published();
+                let session = Arc::clone(&self.observed);
                 self.planned = session.planned;
                 let boundary_muted =
                     self.planned_mute_state(timing.beat, timing.bpm, session.muted);
@@ -1515,9 +1541,8 @@ impl FluidEngine {
     }
 
     fn advance_vamp(&mut self, timing: TimingContext) {
-        let session = self.session.load();
-        if session.vamp != self.vamp {
-            self.vamp = session.vamp;
+        if self.observed.vamp != self.vamp {
+            self.vamp = self.observed.vamp;
         }
 
         let mut released_vamp = None;
@@ -1535,9 +1560,11 @@ impl FluidEngine {
                 Ok(_) => {
                     self.vamp = None;
                     released_vamp = Some(vamp);
+                    self.observe_published();
                 }
                 Err(()) => {
-                    self.vamp = self.session.load().vamp;
+                    self.observe_published();
+                    self.vamp = self.observed.vamp;
                 }
             }
         }
@@ -1556,6 +1583,7 @@ impl FluidEngine {
                             }
                             Ok::<(), ()>(())
                         });
+                        self.observe_published();
                     }
                 }
                 self.vamp_landed_beat = None;
@@ -1628,22 +1656,20 @@ mod planned_mute_tests {
     }
 
     #[test]
-    fn plan_source_retains_the_published_session_without_map_copies() {
+    fn engine_observes_each_publication_on_the_next_sample() {
         let (mut engine, session) = engine_with_planned_mute(false);
         let original = session.load();
         engine.next_stereo();
-        assert!(Arc::ptr_eq(&engine.plan_source, &original));
+        assert!(Arc::ptr_eq(&engine.observed, &original));
         session
             .transact(|snapshot| {
                 snapshot.controls.master.level = 0.4;
                 Ok::<_, ()>(())
             })
             .unwrap();
-        for _ in 0..128 {
-            engine.next_stereo();
-        }
-        assert!(Arc::ptr_eq(&engine.plan_source, &session.load()));
-        assert!(!Arc::ptr_eq(&engine.plan_source, &original));
+        engine.next_stereo();
+        assert!(Arc::ptr_eq(&engine.observed, &session.load()));
+        assert_eq!(engine.snapshot.master.level, 0.4);
     }
 
     #[test]
@@ -1836,6 +1862,9 @@ impl OutputGates {
 pub(crate) struct ControlSmoother {
     pub(crate) spec: &'static ControlSpec,
     pub(crate) ramp: EasedRamp,
+    /// The module slot this row addresses, parsed once from its id so the
+    /// audio thread never parses id strings.
+    slot_address: Option<ModuleSlotAddress>,
     slot_kind: Option<f32>,
     slot_filter_type: Option<f32>,
     /// True while the smoother is settled AND its target equals the snapshot
@@ -1861,6 +1890,7 @@ impl ControlSmoother {
         Self {
             spec,
             ramp: EasedRamp::settled(value),
+            slot_address: ModuleSlotAddress::parse(spec.id),
             slot_kind: None,
             slot_filter_type: None,
             idle: false,
@@ -1890,6 +1920,9 @@ fn filter_type_for_slot(slot: &ModuleSlot) -> Option<f32> {
 pub(crate) struct ControlSmoothers {
     pub(crate) smoothers: Vec<ControlSmoother>,
     active: Vec<usize>,
+    /// Rows the engine settles at a morph landing, resolved at construction.
+    kick_level: usize,
+    bass_level: usize,
 }
 
 impl ControlSmoothers {
@@ -1900,14 +1933,25 @@ impl ControlSmoothers {
             .filter(|spec| seen.insert(spec.id))
             .map(|spec| {
                 let mut smoother = ControlSmoother::for_spec(spec, (spec.get)(c));
-                let slot = module_slot_row(spec.id, c).map(|(slot, _)| slot);
+                let slot = smoother
+                    .slot_address
+                    .and_then(|address| address.resolve(c))
+                    .map(|(slot, _)| slot);
                 smoother.slot_kind = slot.map(|slot| slot.kind);
                 smoother.slot_filter_type = slot.and_then(filter_type_for_slot);
                 smoother
             })
             .collect();
+        let index_of = |id: &str| {
+            smoothers
+                .iter()
+                .position(|smoother: &ControlSmoother| smoother.spec.id == id)
+                .unwrap_or_else(|| panic!("{id} is a registered smoothed control"))
+        };
         Self {
             active: Vec::with_capacity(smoothers.len()),
+            kick_level: index_of("kick.level"),
+            bass_level: index_of("bass.level"),
             smoothers,
         }
     }
@@ -1917,14 +1961,15 @@ impl ControlSmoothers {
         self.active.clear();
         for (index, smoother) in self.smoothers.iter_mut().enumerate() {
             let snapshot_value = (smoother.spec.get)(c);
-            let slot = module_slot_row(smoother.spec.id, c).map(|(slot, _)| slot);
+            let row = smoother.slot_address.and_then(|address| address.resolve(c));
+            let slot = row.map(|(slot, _)| slot);
             let slot_kind = slot.map(|slot| slot.kind);
             let slot_filter_type = slot.and_then(filter_type_for_slot);
             if slot_kind != smoother.slot_kind
                 || slot_filter_type != smoother.slot_filter_type
                 || (snapshot_value != smoother.ramp.target
-                    && (!smoother.spec.contextual(c).kind.smooths_audio()
-                        || is_swing_amount_row(smoother.spec.id, c)))
+                    && (!smoother.spec.contextual_row(row).kind.smooths_audio()
+                        || is_swing_amount(row)))
             {
                 // Slot fields change meaning with the module. Timing and
                 // discrete values (including Swing) must arrive immediately;
@@ -1942,11 +1987,13 @@ impl ControlSmoothers {
         }
     }
 
-    fn settle(&mut self, id: &str, value: f32) {
-        if let Some(smoother) = self.smoothers.iter_mut().find(|s| s.spec.id == id) {
-            smoother.ramp = EasedRamp::settled(value);
-            smoother.idle = true;
-        }
+    /// Jump one row to `value` and write it to the working controls, so a
+    /// settle between session changes is heard on this very sample.
+    fn settle(&mut self, index: usize, value: f32, working: &mut FluidControls) {
+        let smoother = &mut self.smoothers[index];
+        smoother.ramp = EasedRamp::settled(value);
+        smoother.idle = true;
+        (smoother.spec.set)(working, value);
     }
 
     pub(crate) fn apply(&mut self, next: &mut FluidControls) {

@@ -173,6 +173,13 @@ impl LiveSession {
         self.published.load_full()
     }
 
+    /// The published generation without taking ownership: the audio thread
+    /// compares it against the Arc it already holds, so a guard that is
+    /// dropped never releases the last reference.
+    pub(crate) fn published(&self) -> arc_swap::Guard<Arc<LiveSessionSnapshot>> {
+        self.published.load()
+    }
+
     pub(crate) fn audio_seconds(&self) -> f64 {
         f64::from_bits(self.audio_seconds_bits.load(Ordering::Relaxed))
     }

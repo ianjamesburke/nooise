@@ -8,8 +8,9 @@ use std::fmt;
 
 use super::widget::DialScale;
 use super::{
-    ControlKind, ControlSpec, Entry, FluidControls, LfoSnap, TAPER_STEPS_PER_SWEEP, TimingContext,
-    beat_grid_adjust, beat_grid_snap, nearest_power_of_two, snap_step, spec_by_id,
+    ControlKind, ControlSpec, Entry, FluidControls, LfoSnap, ModuleSlotAddress,
+    TAPER_STEPS_PER_SWEEP, TimingContext, beat_grid_adjust, beat_grid_snap, nearest_power_of_two,
+    snap_step, spec_by_id,
 };
 
 mod envelope;
@@ -1023,6 +1024,9 @@ pub(crate) fn modulated_control_value(
 struct PlannedRoute {
     address: ControlAddress,
     spec: &'static ControlSpec,
+    /// The module slot `spec` addresses, parsed once at rebuild so per-sample
+    /// contextual lookups never parse the id.
+    slot_address: Option<ModuleSlotAddress>,
     lfos: Vec<LfoRoute>,
     envelopes: Vec<EnvelopeRoute>,
     capture: Option<super::CaptureClip>,
@@ -1082,9 +1086,11 @@ impl AutomationPlan {
                 .iter()
                 .position(|route| route.address == address)
                 .and_then(|index| previous.swap_remove(index).smoothed_delta);
+            let spec = address.spec();
             self.routes.push(PlannedRoute {
                 address,
-                spec: address.spec(),
+                spec,
+                slot_address: ModuleSlotAddress::parse(spec.id),
                 lfos: automation.routes_for(address).copied().collect(),
                 envelopes: automation.envelopes_for(address).copied().collect(),
                 capture: automation.captures.get(&address).cloned(),
@@ -1145,7 +1151,11 @@ impl AutomationPlan {
                     );
                 }
             }
-            let mut spec = planned.spec.contextual(controls);
+            let mut spec = planned.spec.contextual_row(
+                planned
+                    .slot_address
+                    .and_then(|address| address.resolve(controls)),
+            );
             if let Some(clip) = &planned.capture {
                 spec = clip.playback_spec(spec, ctx.beat);
             }
