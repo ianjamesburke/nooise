@@ -361,9 +361,19 @@ mod tests {
         let song = decode_song_code("n1_Tk9PSQIADgAAAAIAlQAB5gPFAAJKMPtE")
             .expect("nothing it modulates has moved");
         // The built-in re-encode differs only in pinning the clap filter's
-        // mix at its retired-voice fit, where the old code takes the factory.
+        // mix at its retired-voice fit, where the old code takes the factory,
+        // and in writing the same Kick and Clap rhythm on the sixteenth grid.
         let current = &decode_auto_states()[0];
-        for spec in all_specs().filter(|spec| spec.id != "clap.slot1.amount") {
+        let regridded = |id: &str| {
+            ["kick.", "clap."].iter().any(|layer| {
+                id.strip_prefix(layer).is_some_and(|field| {
+                    ["interval_beats", "offset_beats", "pattern", "steps"].contains(&field)
+                        || field.starts_with("step")
+                })
+            })
+        };
+        for spec in all_specs().filter(|spec| spec.id != "clap.slot1.amount" && !regridded(spec.id))
+        {
             assert_eq!(
                 spec.quantized_value(&song.controls),
                 spec.quantized_value(&current.controls),

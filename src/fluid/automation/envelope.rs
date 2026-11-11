@@ -23,7 +23,7 @@ const DEFAULT_ENV_DECAY_BEATS: f32 = 4.0;
 // ============================================================
 
 /// What re-triggers a one-shot envelope. `EveryBeats` cycles on a musical grid,
-/// `OnKick` fires with the kick, and `Once` is the set-and-forget macro that
+/// `OnKick` fires on the Kick's authored hit steps, and `Once` is the set-and-forget macro that
 /// sweeps a single time from song start.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum EnvTrigger {
@@ -228,15 +228,21 @@ impl EnvelopeRoute {
                 }
             }
             EnvTrigger::OnKick => {
+                // Walk back at most one pattern cycle to the latest grid slot
+                // whose step is a hit, numbered as the Kick numbers them.
                 let interval = f64::from(ctx.kick_interval_beats.max(1.0 / 64.0));
-                let offset = f64::from(ctx.kick_offset_beats).rem_euclid(interval);
-                let slot = ((ctx.beat - offset) / interval).floor();
-                let last = offset + slot * interval;
-                if last < -1e-9 {
-                    None
-                } else {
-                    Some((ctx.beat - last) as f32)
-                }
+                let offset = f64::from(ctx.kick_offset_beats);
+                let steps = i64::from(ctx.kick_steps.max(1));
+                let slot = ((ctx.beat - offset) / interval + 1e-9).floor() as i64;
+                (0..steps).find_map(|back| {
+                    let candidate = slot - back;
+                    let last = offset + candidate as f64 * interval;
+                    if last < -1e-9 {
+                        return Some(None);
+                    }
+                    let step = candidate.rem_euclid(steps) as u32;
+                    (ctx.kick_hits & (1 << step) != 0).then_some(Some((ctx.beat - last) as f32))
+                })?
             }
         }
     }

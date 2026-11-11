@@ -296,16 +296,39 @@ pub(crate) enum ModKind {
 }
 
 /// Sampling context shared by every modulator so the UI marker and the engine
-/// value come from the same math. `kick_*` describe the live kick grid, which
-/// the on-kick envelope trigger reconstructs deterministically.
+/// value come from the same math. `kick_*` describe the live kick grid and its
+/// authored hit steps, which the on-kick envelope trigger reconstructs
+/// deterministically.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ModContext {
     pub(crate) beat: f64,
     pub(crate) kick_interval_beats: f32,
     pub(crate) kick_offset_beats: f32,
+    /// Bit `n` set when step `n + 1` of the Kick's authored pattern is a hit.
+    pub(crate) kick_hits: u16,
+    /// Live Kick step count, `1..=16`.
+    pub(crate) kick_steps: u8,
 }
 
 impl ModContext {
+    /// The context at `beat` for these controls: the Kick's grid and the hit
+    /// steps it plays (evolution aside, which only the voice sees).
+    pub(crate) fn new(beat: f64, controls: &FluidControls) -> Self {
+        let authored = super::voice::kick_authored_steps(&controls.kick);
+        let kick_hits = authored
+            .iter()
+            .enumerate()
+            .filter(|(_, step)| step.round() >= 1.0)
+            .fold(0u16, |mask, (index, _)| mask | (1 << index));
+        Self {
+            beat,
+            kick_interval_beats: controls.kick.interval_beats,
+            kick_offset_beats: controls.kick.offset_beats,
+            kick_hits,
+            kick_steps: super::voice::kick_live_step_count(controls.kick.step_count) as u8,
+        }
+    }
+
     /// Context for an LFO-only evaluation; the kick fields are unused because
     /// no LFO shape depends on the kick grid.
     #[cfg(test)]
@@ -314,6 +337,8 @@ impl ModContext {
             beat,
             kick_interval_beats: 1.0,
             kick_offset_beats: 0.0,
+            kick_hits: u16::MAX,
+            kick_steps: 1,
         }
     }
 }
@@ -1194,11 +1219,7 @@ impl AutomationPlan {
             self.coefficient = (1.0 - (-1.0 / samples).exp()) as f32;
         }
         controls.pad.begin_chord_evaluation();
-        let ctx = ModContext {
-            beat: timing.beat,
-            kick_interval_beats: controls.kick.interval_beats,
-            kick_offset_beats: controls.kick.offset_beats,
-        };
+        let ctx = ModContext::new(timing.beat, controls);
         for planned in &mut self.routes {
             if planned.finished {
                 continue;

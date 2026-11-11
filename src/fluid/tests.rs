@@ -1647,7 +1647,7 @@ fn morph_landing_first_kick_and_bass_notes_are_as_audible_as_held_notes() {
         controls.pad.chord_count = 1.0;
         controls.pad.level = 0.0;
         (spec_by_id(tab.level_id().unwrap()).unwrap().set)(&mut controls, 0.8);
-        controls.kick.interval_beats = 1.0;
+        // The default Kick hits on every beat: steps 1 and 5 at 0.25 beats.
         let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::new(
             vec![SongState::from_controls(controls.clone())],
             3,
@@ -7689,6 +7689,8 @@ fn env_ctx(beat: f64) -> ModContext {
         beat,
         kick_interval_beats: 1.0,
         kick_offset_beats: 0.0,
+        kick_hits: u16::MAX,
+        kick_steps: 1,
     }
 }
 
@@ -8135,11 +8137,76 @@ fn envelope_on_kick_tracks_the_kick_grid() {
         beat,
         kick_interval_beats: 2.0,
         kick_offset_beats: 0.0,
+        kick_hits: u16::MAX,
+        kick_steps: 1,
     };
     // Kicks land on beats 0, 2, 4, ...; the one-shot peaks right at each hit.
     assert_near(env.level_at(ctx(2.0)), 1.0);
     assert_near(env.level_at(ctx(2.5)), 0.5);
     assert_near(env.level_at(ctx(4.0)), 1.0);
+}
+
+#[test]
+fn envelope_on_kick_fires_on_hit_steps_not_every_grid_slot() {
+    let env = EnvelopeRoute {
+        enabled: true,
+        amount: 1.0,
+        attack_beats: 0.0,
+        decay_beats: 1.0,
+        trigger: EnvTrigger::OnKick,
+    };
+    // The fresh Kick: steps 1 and 5 of eight at 0.25 beats, a hit per beat.
+    let controls = FluidControls::default();
+    let ctx = |beat: f64| ModContext::new(beat, &controls);
+    assert_near(env.level_at(ctx(1.0)), 1.0);
+    assert_near(env.level_at(ctx(1.5)), 0.5);
+    assert_near(env.level_at(ctx(1.75)), 0.25);
+    assert_near(env.level_at(ctx(2.0)), 1.0);
+
+    // An all-rest pattern never fires.
+    let mut silent = FluidControls::default();
+    silent.kick.steps = [0.0; KICK_STEP_COUNT];
+    assert_near(env.level_at(ModContext::new(3.3, &silent)), 0.0);
+}
+
+#[test]
+fn fresh_kick_and_clap_play_beats_and_backbeats_on_a_sixteenth_grid() {
+    let controls = FluidControls::default();
+    assert_eq!(
+        (controls.kick.interval_beats, controls.kick.step_count),
+        (0.25, 8.0)
+    );
+    assert_eq!(
+        (controls.clap.interval_beats, controls.clap.step_count),
+        (0.25, 8.0)
+    );
+    let telemetry = Arc::new(FluidTelemetry::default());
+    let mut kick = KickEngine::new(2_000.0, Arc::clone(&telemetry));
+    let mut clap = ClapEngine::with_telemetry(2_000.0, Arc::clone(&telemetry));
+    let (mut kicks, mut claps) = (Vec::new(), Vec::new());
+    let mut beat = 0.0;
+    while beat < 3.9 {
+        let k = telemetry.kick_pulse.load(Ordering::Relaxed);
+        let c = telemetry.hits[MusicalHit::Clap as usize]
+            .pulse
+            .load(Ordering::Relaxed);
+        let timing = TimingContext::new(2_000.0, 120.0, beat);
+        kick.next(&controls.kick, timing);
+        clap.next(&controls.clap, timing);
+        if telemetry.kick_pulse.load(Ordering::Relaxed) != k {
+            kicks.push((beat * 4.0).round() / 4.0);
+        }
+        if telemetry.hits[MusicalHit::Clap as usize]
+            .pulse
+            .load(Ordering::Relaxed)
+            != c
+        {
+            claps.push((beat * 4.0).round() / 4.0);
+        }
+        beat += 120.0 / (60.0 * 2_000.0);
+    }
+    assert_eq!(kicks, vec![0.0, 1.0, 2.0, 3.0], "four on the floor");
+    assert_eq!(claps, vec![1.0, 3.0], "beats 2 and 4");
 }
 
 #[test]

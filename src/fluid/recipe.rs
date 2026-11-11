@@ -300,6 +300,8 @@ mod tests {
                 beat,
                 kick_interval_beats: 1.0,
                 kick_offset_beats: 0.0,
+                kick_hits: u16::MAX,
+                kick_steps: 1,
             };
             controls.level = modulated_control_value_full(
                 spec_by_id(target.id).unwrap(),
@@ -368,6 +370,8 @@ mod tests {
                     beat,
                     kick_interval_beats: 1.0,
                     kick_offset_beats: 0.0,
+                    kick_hits: u16::MAX,
+                    kick_steps: 1,
                 },
             );
             let wet = chopped.next(&controls, MasterKey::Home, timing);
@@ -505,6 +509,8 @@ mod tests {
             beat,
             kick_interval_beats: 2.0,
             kick_offset_beats: 0.5,
+            kick_hits: u16::MAX,
+            kick_steps: 1,
         };
         let spec = spec_by_id(target.id).unwrap();
         let value = |beat| {
