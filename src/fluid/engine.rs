@@ -1690,7 +1690,11 @@ impl FluidEngine {
             return;
         }
         let mut landed = push;
-        landed.land(self.pad.last_chord_notes, self.pad.cursor.slot());
+        landed.settle(
+            timing.beat + GRID_BEAT_EPSILON,
+            self.pad.last_chord_notes,
+            self.pad.cursor.slot(),
+        );
         if self
             .session
             .transact(|snapshot| {
@@ -3498,6 +3502,46 @@ mod push_tests {
         let after = session.load();
         assert_eq!(after.push.looping, None, "the push took over");
         assert_eq!(engine.pad.last_chord_notes, after.push.held.unwrap().notes);
+    }
+
+    /// `G0` ends the loop on the quantize line, not before: the pad then
+    /// changes back to the pushed chord through the ordinary chord-change
+    /// path (a new layer fading in over Attack while the loop's rings out).
+    /// A song saved while the clear waits keeps no loop.
+    #[test]
+    fn clearing_a_loop_lands_on_the_line_and_fades_back_to_the_push() {
+        let (session, mut engine, mut effects) = engine_quantized(PushQuantize::Beat);
+        play_until_beat(&mut engine, 4.3);
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::Relative));
+        play_until_beat(&mut engine, 5.6);
+        push(&mut effects, HarmonyAction::Move(HarmonyMove::StepUp));
+        play_until_beat(&mut engine, 7.5);
+        grab(&mut effects, MotionDuration::Beats4);
+        play_until_beat(&mut engine, 9.4);
+        let held = session.load().push.held.expect("the push under the loop");
+        assert_ne!(engine.pad.last_chord_notes, held.notes, "the loop sounds");
+        effects.clear_harmony_loop(0.0).unwrap();
+        let waiting = session.load();
+        assert_eq!(waiting.push.loop_release, Some(10.0));
+        let song = SongState {
+            controls: waiting.controls.clone(),
+            push: waiting.push,
+            ..SongState::default()
+        };
+        let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+        assert_eq!(
+            decoded.push.looping, None,
+            "a waiting clear saves as landed"
+        );
+        let at = play_to_change(&mut engine, 11.0);
+        assert_near(at, 10.0, &engine);
+        assert_eq!(engine.pad.last_chord_notes, held.notes);
+        assert_eq!(session.load().push.looping, None);
+        assert!(
+            newest_level(&engine) < 0.05,
+            "a new layer fades in over Attack"
+        );
+        assert!(engine.pad.layers.len() > 1, "the loop's chord rings out");
     }
 
     /// A loop survives a song code and a stored state, keeping its phase.

@@ -175,6 +175,12 @@ bar line, with their real timing, and start the first pass on that line.
 - **Replace and take over.** A grab replaces the loop and withdraws a waiting
   push. A landed push ends the loop and holds the pushed chord; undo still
   walks back pushes.
+- **Clear.** `G0` / `/loop clear` (`PushedHarmony::clear_loop`) sets
+  `loop_release` to the quantize line, as a push lands; `settle` ends the
+  loop there and the pad crossfades back to the held push or the progression.
+  A code saved while it waits omits the loop (`saved_loop`). Undo does not
+  restore a loop: the undo history is a chain of chords, and mixing loops
+  into it would make Backspace's meaning depend on what was done last.
 - **Persistence.** Song record 17 (version 1): slot, bars, the start beat
   rebased to song beat zero (so a state or code resumes at the same phase),
   and per event an offset in 1/1024 beat, root, quality and four notes, 8

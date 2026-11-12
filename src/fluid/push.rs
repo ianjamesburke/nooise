@@ -300,6 +300,10 @@ pub(crate) struct PushedHarmony {
     pub(crate) queued: Option<QueuedPush>,
     /// A grabbed harmony loop replaying in time. A landed push ends it.
     pub(crate) looping: Option<HarmonyLoop>,
+    /// A `G0` waiting to end the loop on this beat (a quantize line). Until
+    /// then the loop plays on; after it the pad changes back to the pushed or
+    /// authored harmony through the ordinary Attack/Release path.
+    pub(crate) loop_release: Option<f64>,
     /// What the pad sounded, for `G`. Live-only.
     pub(crate) heard: HeardLog,
     /// Live-only, like the undo history.
@@ -371,6 +375,25 @@ impl PushedHarmony {
     pub(crate) fn start_loop(&mut self, looping: HarmonyLoop) {
         self.looping = Some(looping);
         self.queued = None;
+        self.loop_release = None;
+    }
+
+    /// `G0`: end the loop on the quantize line after `beat`, as a push would
+    /// land. `false` when there is no loop to clear.
+    pub(crate) fn clear_loop(&mut self, beat: f64) -> bool {
+        if self.looping.is_none() {
+            return false;
+        }
+        self.loop_release = Some(self.quantize.landing(beat));
+        true
+    }
+
+    /// The loop as a song code keeps it: a clear already asked for counts as
+    /// landed, so a loaded song plays what the player chose.
+    pub(crate) fn saved_loop(&self) -> Option<&HarmonyLoop> {
+        self.looping
+            .as_ref()
+            .filter(|_| self.loop_release.is_none())
     }
 
     /// Where the harmony is headed, as the undo history records it.
@@ -425,6 +448,19 @@ impl PushedHarmony {
 
     pub(crate) fn is_due(&self, beat: f64) -> bool {
         self.queued.is_some_and(|queued| beat >= queued.land_beat)
+            || self.loop_release.is_some_and(|release| beat >= release)
+    }
+
+    /// Land whatever is due at `beat`: a waiting `G0` ends the loop, then a
+    /// queued move lands (voiced from `sounding` on `slot`).
+    pub(crate) fn settle(&mut self, beat: f64, sounding: [i32; 4], slot: usize) {
+        if self.loop_release.is_some_and(|release| beat >= release) {
+            self.looping = None;
+            self.loop_release = None;
+        }
+        if self.queued.is_some_and(|queued| beat >= queued.land_beat) {
+            self.land(sounding, slot);
+        }
     }
 
     /// Land the queued move: voice its chord from `sounding` on `slot` (a
@@ -440,6 +476,7 @@ impl PushedHarmony {
             .or(self.looping.map(|looping| looping.slot))
             .unwrap_or(slot as u8);
         self.looping = None;
+        self.loop_release = None;
         self.held = Some(HeldChord {
             slot,
             triad: queued.target,
@@ -462,6 +499,9 @@ impl PushedHarmony {
         if let Some(looping) = &mut self.looping {
             looping.start_beat -= beat;
         }
+        if let Some(release) = &mut self.loop_release {
+            *release = (*release - beat).max(0.0);
+        }
         self
     }
 
@@ -477,6 +517,13 @@ impl PushedHarmony {
         if let Some(queued) = &mut self.queued {
             let due = queued.land_beat - line;
             queued.land_beat = self
+                .quantize
+                .grid_beats()
+                .map_or(due.max(0.0), |grid| next_line(due, grid));
+        }
+        if let Some(release) = &mut self.loop_release {
+            let due = *release - line;
+            *release = self
                 .quantize
                 .grid_beats()
                 .map_or(due.max(0.0), |grid| next_line(due, grid));
@@ -499,6 +546,9 @@ impl PushedHarmony {
         }
         if let Some(looping) = &mut self.looping {
             looping.start_beat = 0.0;
+        }
+        if let Some(release) = &mut self.loop_release {
+            *release = 0.0;
         }
         self.heard = HeardLog::default();
         self

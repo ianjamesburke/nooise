@@ -1207,6 +1207,8 @@ pub(crate) enum Intent {
     /// Grab recent movement on the visible knob, phase-anchored to its
     /// nearest bar downbeat.
     GrabMotion(super::MotionDuration),
+    /// `0` in the grab leader: clear the harmony loop (`G0`).
+    GrabClear,
     EnterLeadPlay,
     /// A 1-based Lead tone, from the letter row. `hold` is whether the
     /// terminal will report the key's release, so the note can sustain.
@@ -1357,6 +1359,7 @@ impl Intent {
             Self::SelectPerformanceInstrument { .. }
             | Self::JumpToParameter(_)
             | Self::GrabMotion(_)
+            | Self::GrabClear
             | Self::ChooseState(_)
             | Self::PreviousState
             | Self::PushHarmony(_) => &[ModeKind::Performance],
@@ -1407,6 +1410,7 @@ impl Intent {
             | Self::SelectPerformanceInstrument { .. }
             | Self::JumpToParameter(_)
             | Self::GrabMotion(_)
+            | Self::GrabClear
             | Self::OpenStateLeader(_)
             | Self::ChooseState(_)
             | Self::PreviousState
@@ -1548,6 +1552,8 @@ pub(crate) enum InteractionEffect {
     SetHarmonyQuantize(super::PushQuantize),
     /// Make the chords pushed over the last bars the looping progression.
     GrabHarmony(super::MotionDuration),
+    /// End the harmony loop on the next quantize line (`G0`, `/loop clear`).
+    ClearHarmonyLoop,
     /// Reset the active sequence steps on `Tab` (Pads to root, notes to rest).
     ClearSequence(Tab),
     ToggleTransport,
@@ -2485,6 +2491,11 @@ fn update_grab(
             });
             *next_mode = Some(back);
         }
+        // Only a harmony loop clears; `g0` on a knob keeps nothing and waits.
+        Intent::GrabClear if matches!(target, GrabTarget::Harmony) => {
+            effects.push(InteractionEffect::ClearHarmonyLoop);
+            *next_mode = Some(back);
+        }
         _ => {}
     }
 }
@@ -2668,6 +2679,7 @@ fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionE
         Operation::State(action) => InteractionEffect::State(action),
         Operation::Harmony(action) => InteractionEffect::Harmony(action),
         Operation::HarmonyQuantize(quantize) => InteractionEffect::SetHarmonyQuantize(quantize),
+        Operation::ClearLoop => InteractionEffect::ClearHarmonyLoop,
         Operation::SetMode(index) => InteractionEffect::PaletteCommit(vec![PaletteStagedEdit {
             id: "master.key_mode",
             value_bits: f32::from(index).to_bits(),

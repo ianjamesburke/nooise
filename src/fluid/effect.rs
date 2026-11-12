@@ -936,7 +936,7 @@ impl EffectExecutor {
                         // clock would have, not on this later tick.
                         let landed_at =
                             snapshot.push.queued.map_or(beat, |queued| queued.land_beat);
-                        snapshot.push.land(sounding, slot);
+                        snapshot.push.settle(beat, sounding, slot);
                         if let Some(held) = snapshot.push.held {
                             snapshot.push.heard.record(HarmonyEvent {
                                 at: landed_at,
@@ -1381,6 +1381,29 @@ impl EffectExecutor {
         })
     }
 
+    /// `G0` or `/loop clear`: end the harmony loop on the next quantize
+    /// line, as a push would land; the pad then changes back to the pushed or
+    /// authored harmony through the ordinary Attack/Release path. Like a grab
+    /// it plays over the song, so auto keeps running.
+    pub(crate) fn clear_harmony_loop(
+        &mut self,
+        beat: f64,
+    ) -> Result<EffectAcknowledgement, EffectFailure> {
+        let beat = self.current_beat(beat);
+        let mut cleared = false;
+        let snapshot = self
+            .session
+            .update(|snapshot| cleared = snapshot.push.clear_loop(beat));
+        if !cleared {
+            self.show_message("No loop to clear".to_string());
+            return Ok(EffectAcknowledgement::NoChange);
+        }
+        self.show_message("Loop cleared".to_string());
+        Ok(EffectAcknowledgement::Published {
+            generation: snapshot.generation,
+        })
+    }
+
     /// Set where Push the Harmony moves land. A live play-style choice: it
     /// re-times a waiting move, never exits auto, and is not saved in songs.
     pub(crate) fn set_harmony_quantize(
@@ -1811,6 +1834,7 @@ impl EffectExecutor {
             InteractionEffect::ToggleStateQueue(index) => self.toggle_state_queue(index),
             InteractionEffect::Harmony(action) => self.push_harmony(action, context.beat),
             InteractionEffect::GrabHarmony(duration) => self.grab_harmony(duration, context.beat),
+            InteractionEffect::ClearHarmonyLoop => self.clear_harmony_loop(context.beat),
             InteractionEffect::SetHarmonyQuantize(quantize) => {
                 self.set_harmony_quantize(quantize, context.beat)
             }
@@ -1974,6 +1998,7 @@ impl EffectExecutor {
             InteractionEffect::ToggleStateQueue(index) => self.toggle_state_queue(index),
             InteractionEffect::Harmony(action) => self.push_harmony(action, context.beat),
             InteractionEffect::GrabHarmony(duration) => self.grab_harmony(duration, context.beat),
+            InteractionEffect::ClearHarmonyLoop => self.clear_harmony_loop(context.beat),
             InteractionEffect::SetHarmonyQuantize(quantize) => {
                 self.set_harmony_quantize(quantize, context.beat)
             }

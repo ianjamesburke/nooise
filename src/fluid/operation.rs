@@ -25,6 +25,8 @@ pub(crate) enum Operation {
     State(StateAction),
     Harmony(HarmonyAction),
     HarmonyQuantize(PushQuantize),
+    /// `/loop clear`: end the harmony loop (`G0`).
+    ClearLoop,
     /// Set `master.key_mode` to this `MASTER_MODES` row.
     SetMode(u8),
     /// Set `master.key`: 0..=11 are C..B.
@@ -151,7 +153,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 93] = [
+    pub(crate) const ALL: [Self; 94] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -223,6 +225,7 @@ impl Operation {
         Self::HarmonyQuantize(PushQuantize::OneBar),
         Self::HarmonyQuantize(PushQuantize::TwoBars),
         Self::HarmonyQuantize(PushQuantize::FourBars),
+        Self::ClearLoop,
         Self::SetMode(0),
         Self::SetMode(1),
         Self::SetMode(2),
@@ -478,6 +481,12 @@ impl Operation {
                 aliases: KEY_ALIASES[usize::from(index)],
                 description: "the key every progression plays in",
             },
+            Self::ClearLoop => OperationSpec {
+                operation: self,
+                label: "Loop clear",
+                aliases: &["clear loop", "harmony loop clear", "stop loop", "drop loop"],
+                description: "end the harmony loop on the next line (G then 0)",
+            },
             Self::SetOctave(octaves) => OperationSpec {
                 operation: self,
                 label: match octaves {
@@ -528,6 +537,7 @@ impl Operation {
             | Self::State(_)
             | Self::Harmony(_)
             | Self::HarmonyQuantize(_)
+            | Self::ClearLoop
             | Self::SetMode(_)
             | Self::SetKey(_)
             | Self::SetOctave(_)

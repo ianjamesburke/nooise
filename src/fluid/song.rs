@@ -400,7 +400,7 @@ pub(crate) fn encode_song_code_at_epoch(
             &mut bytes,
         )?;
     }
-    if let Some(looping) = &song.push.looping {
+    if let Some(looping) = song.push.saved_loop() {
         write_record(
             HARMONY_LOOP_RECORD,
             &write_harmony_loop(looping)?,

@@ -6477,6 +6477,60 @@ fn shift_g_loops_the_chords_just_played() {
     assert!(frame.contains("LOOP 1 bar"), "{frame}");
 }
 
+/// Through the production keys: `G` `0` clears the loop `G` `1` made, on
+/// the next beat line (the default quantize), and `/loop clear` does the
+/// same from the palette. Clearing with no loop says so and changes nothing.
+#[test]
+fn shift_g_zero_and_loop_clear_end_the_loop() {
+    let press = |character| key(0, FixtureKey::Character(character), InputPhase::Press);
+    let looped = || {
+        vec![
+            space(InputPhase::Press),
+            press('f'),
+            TraceEvent::Tick { after_ms: 1_100 },
+            press('l'),
+            TraceEvent::Tick { after_ms: 1_000 },
+            space(InputPhase::Release),
+            TraceEvent::Tick { after_ms: 1_000 },
+            modified_key(0, FixtureKey::Character('G'), InputPhase::Press, 1),
+            press('1'),
+            TraceEvent::Tick { after_ms: 20 },
+        ]
+    };
+    let mut keys = looped();
+    keys.extend([
+        modified_key(0, FixtureKey::Character('G'), InputPhase::Press, 1),
+        press('0'),
+        TraceEvent::Tick { after_ms: 20 },
+    ]);
+    let waiting = replay(&keys, TerminalCapabilities::full());
+    assert!(waiting.harmony_loop.is_some(), "it waits for the line");
+    assert_eq!(waiting.final_owner(), Some("BROWSE"));
+    keys.push(TraceEvent::Tick { after_ms: 1_100 });
+    let cleared = replay(&keys, TerminalCapabilities::full());
+    assert_eq!(cleared.effect_count("ClearHarmonyLoop=>OK:Published"), 1);
+    assert_eq!(cleared.harmony_loop, None);
+
+    let mut palette = looped();
+    palette.push(press('/'));
+    palette.extend("loop clear".chars().map(press));
+    palette.extend([
+        key(0, FixtureKey::Enter, InputPhase::Press),
+        TraceEvent::Tick { after_ms: 1_100 },
+    ]);
+    let cleared = replay(&palette, TerminalCapabilities::full());
+    assert_eq!(cleared.harmony_loop, None);
+
+    let nothing = replay(
+        &[
+            modified_key(0, FixtureKey::Character('G'), InputPhase::Press, 1),
+            press('0'),
+        ],
+        TerminalCapabilities::full(),
+    );
+    assert_eq!(nothing.effect_count("ClearHarmonyLoop=>OK:NoChange"), 1);
+}
+
 /// `/mode dorian` and `/key d` set the Master rows, and the Mode saves in
 /// the song code.
 #[test]

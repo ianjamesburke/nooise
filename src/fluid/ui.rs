@@ -1382,10 +1382,13 @@ fn draw_help(f: &mut Frame, inner: Rect) {
     ));
     lines.extend(state(
         "Grab (then 1 / 2 / 4 / 8 bars)",
-        &[&[
-            ("g", "knob or editor field motion"),
-            ("\u{21e7}G", "loop the chords heard"),
-        ]],
+        &[
+            &[
+                ("g", "knob or editor field motion"),
+                ("\u{21e7}G", "loop the chords heard"),
+            ],
+            &[("\u{21e7}G 0", "clear the chord loop")],
+        ],
     ));
     lines.extend(state(
         "Go (') and keep (\")",
@@ -1460,7 +1463,7 @@ fn leader_frame_sized(
 /// The grab leader: the four bar counts, and what the grab keeps.
 fn draw_grab_leader(f: &mut Frame, inner: Rect, harmony: bool) {
     let title = if harmony { " Grab chords " } else { " Grab " };
-    let content = leader_frame(f, inner, title, 5);
+    let content = leader_frame(f, inner, title, if harmony { 6 } else { 5 });
     let key_style = Style::default()
         .fg(BROWSE_PALETTE.active)
         .add_modifier(Modifier::BOLD);
@@ -1480,14 +1483,20 @@ fn draw_grab_leader(f: &mut Frame, inner: Rect, harmony: bool) {
         bars.push(Span::styled(format!("{key} "), key_style));
         bars.push(Span::styled(label, label_style));
     }
-    let lines = vec![
+    let mut lines = vec![
         Line::from(Span::styled(what, label_style)),
         Line::from(bars),
-        Line::from(vec![
-            Span::styled("Esc  ", key_style),
-            Span::styled("Cancel", label_style),
-        ]),
     ];
+    if harmony {
+        lines.push(Line::from(vec![
+            Span::styled("0 ", key_style),
+            Span::styled("clear the loop", label_style),
+        ]));
+    }
+    lines.push(Line::from(vec![
+        Span::styled("Esc  ", key_style),
+        Span::styled("Cancel", label_style),
+    ]));
     f.render_widget(Paragraph::new(lines).alignment(Alignment::Left), content);
 }
 

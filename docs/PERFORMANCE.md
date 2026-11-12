@@ -369,8 +369,12 @@ chords separate from the progression's slots, so a loop can be any of the
 four lengths whatever the progression holds, and it changes chords through
 the same Attack/Release crossfade as a push. A new grab replaces the loop.
 A push while a loop plays ends it when the push lands: you have taken over;
-grab again to loop the new material. Backspace (Space held) still undoes
-pushes. The header reads `LOOP 4 bars · 2` (the bar of the pass). States and
+grab again to loop the new material. `G` then `0` (or `/loop clear`) ends
+the loop on the next quantize line, the way a push lands: until then it plays
+on, and then the pad changes back to the pushed chord (or the progression)
+through the same crossfade. A song saved while a clear waits keeps no loop.
+Backspace (Space held) still undoes pushes only; it does not bring back a
+cleared or replaced loop. The header reads `LOOP 4 bars · 2` (the bar of the pass). States and
 song codes keep the playing loop and its phase; a loop holds at most 32
 chord changes, every change of an 8-bar loop on the default beat grid. The
 heard log is live-only and starts over when the clock restarts or a state

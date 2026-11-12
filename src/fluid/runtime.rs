@@ -781,6 +781,7 @@ fn grab_binding(code: &PhysicalKey) -> Option<Intent> {
         PhysicalKey::Character('2') => super::MotionDuration::Beats8,
         PhysicalKey::Character('4') => super::MotionDuration::Beats16,
         PhysicalKey::Character('8') => super::MotionDuration::Beats32,
+        PhysicalKey::Character('0') => return Some(Intent::GrabClear),
         _ => return None,
     };
     Some(Intent::GrabMotion(duration))
@@ -817,7 +818,11 @@ mod motion_leader_tests {
                 Some(Intent::GrabMotion(duration))
             );
         }
-        for inert in ['3', '0', 'a', ' '] {
+        assert_eq!(
+            grab_binding(&PhysicalKey::Character('0')),
+            Some(Intent::GrabClear)
+        );
+        for inert in ['3', 'a', ' '] {
             assert_eq!(grab_binding(&PhysicalKey::Character(inert)), None);
         }
     }
