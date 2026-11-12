@@ -1,4 +1,4 @@
-# ADR 0003: Master output stage — fixed makeup and a -1 dBFS lookahead limiter
+# ADR 0004: Master output stage — fixed makeup and a -1 dBFS lookahead limiter
 
 - Status: Accepted
 - Date: 2026-11-11
