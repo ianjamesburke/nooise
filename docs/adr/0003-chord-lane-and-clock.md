@@ -1,7 +1,7 @@
 # ADR 0003: One chord lane, one chord clock
 
 - Status: Accepted 2026-11-11 (design and rulings by Ian); not implemented,
-  lands in the build order below; one open question
+  lands in the build order below
 - Date: 2026-11-11
 - Amends: [ADR 0002](0002-v3-chord-model.md). Its `[Cell; 16]` plan
   (Remaining) and its `ProgressionFollower`/`ProgressionCursor` carry-forward
@@ -87,14 +87,12 @@ One timed-event lane, one clock (design C).
 3. **Vamp keeps the clock running** on the plain progression too, one rule
    for both; release rejoins at the next chord boundary.
 4. **Loop lengths are any whole-beat length**, not just 1/2/4/8 bars.
+5. **Finest authored resolution is a sixteenth** (0.25 beat), the same grid
+   the drum step sequencers use.
 
 Adopted defaults: a push over a loop ends the loop and holds; Shift+D moves
 the loop lane's seam too; v3 song-code breakage at step 6 is accepted after
 the show.
-
-### Open question (Ian)
-
-- Finest authored resolution: beat, half-beat or sixteenth.
 
 ## Rejected alternatives
 
