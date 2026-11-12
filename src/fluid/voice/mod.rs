@@ -12,6 +12,7 @@ mod evolve;
 mod harmony;
 mod kick;
 mod lead;
+mod mode_map;
 mod pad;
 mod perc;
 mod sequence;
@@ -27,6 +28,7 @@ pub(crate) use evolve::*;
 pub(crate) use harmony::*;
 pub(crate) use kick::*;
 pub(crate) use lead::*;
+pub(crate) use mode_map::*;
 pub(crate) use pad::*;
 pub(crate) use perc::*;
 pub(crate) use sequence::*;
@@ -48,46 +50,112 @@ pub(crate) fn midi_to_hz(note: i32) -> f32 {
     440.0 * 2f32.powf((note as f32 - 69.0) / 12.0)
 }
 
-/// The Master Key control: each progression keeps its authored key (`Home`),
-/// or every progression is moved into one chosen pitch class. The shift is
-/// resolved per progression, at the moment a voice builds a note, so a morph
-/// or a progression change lands in the key without a click or a stale shift.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum MasterKey {
-    #[default]
-    Home,
+/// The Master Key and Master Mode: the one concrete key every progression
+/// plays in. A progression is relative to it: its chords are re-read in this
+/// mode (`ModeMap`), then carried to this tonic (`shift`). Both are resolved
+/// per progression at the moment a voice builds a note, so a morph or a
+/// progression change lands in the key without a click or a stale shift.
+/// Launch and song loading derive it from the progression
+/// (`of_progression`), so nothing sounds different until it is changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct MasterKey {
     /// A pitch class, C = 0 through B = 11.
-    Pitch(u8),
+    pitch: u8,
+    pub(crate) mode: HomeMode,
 }
 
+/// `master.key`'s song-code value at each dial position, C through B. A code
+/// stores 1 for C because 0 was the retired Home key; a new code never
+/// writes 0, so an old code's chosen key still means the same pitch.
+pub(crate) const MASTER_KEY_SONG_VALUES: [i8; 12] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+
 impl MasterKey {
-    /// `master.key`'s dial: 0 is Home, 1 through 12 are C through B.
-    pub(crate) const DIAL_MAX: f32 = 12.0;
+    /// `master.key`'s dial: 0 through 11 are C through B.
+    pub(crate) const DIAL_MAX: f32 = 11.0;
 
-    pub(crate) fn from_control(value: f32) -> Self {
-        match value.round().clamp(0.0, Self::DIAL_MAX) as u8 {
-            0 => Self::Home,
-            step => Self::Pitch(step - 1),
+    pub(crate) const fn new(pitch: i32, mode: HomeMode) -> Self {
+        Self {
+            pitch: pitch.rem_euclid(12) as u8,
+            mode,
         }
     }
 
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Home => "Home",
-            Self::Pitch(pitch) => chord_pitch_name(i32::from(pitch)),
+    pub(crate) fn from_controls(master: &MasterControls) -> Self {
+        Self::new(
+            master.key.round().clamp(0.0, Self::DIAL_MAX) as i32,
+            master_mode(master.mode).1,
+        )
+    }
+
+    /// The key `progression` is authored in: its tonic and its own mode.
+    pub(crate) fn of_progression(progression: usize) -> Self {
+        Self::new(
+            progression_tonic_pitch_class(progression),
+            progression_home_mode(progression),
+        )
+    }
+
+    pub(crate) fn pitch(self) -> i32 {
+        i32::from(self.pitch)
+    }
+
+    /// The `master.key` and `master.mode` dial values that name this key.
+    pub(crate) fn dial_values(self) -> (f32, f32) {
+        let mode = MASTER_MODES
+            .iter()
+            .position(|(_, mode)| *mode == self.mode)
+            .expect("every home mode is a Master Mode");
+        (f32::from(self.pitch), mode as f32)
+    }
+
+    /// The tonic spelled as its key signature spells it: sharps when the
+    /// mode's parent major scale is a sharp key, else flats (Db major, C#
+    /// minor, Bb minor, G# minor).
+    pub(crate) fn pitch_name(self) -> &'static str {
+        const SHARPS: [&str; 12] = [
+            "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+        ];
+        const FLATS: [&str; 12] = [
+            "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B",
+        ];
+        // The mode's tonic is this degree of its parent major scale.
+        let parent = (self.pitch()
+            - HomeMode::Major.intervals()[match self.mode {
+                HomeMode::Major => 0,
+                HomeMode::Dorian => 1,
+                HomeMode::Phrygian => 2,
+                HomeMode::Mixolydian => 4,
+                HomeMode::Minor => 5,
+            }])
+        .rem_euclid(12);
+        let names = if [7, 2, 9, 4, 11].contains(&parent) {
+            SHARPS
+        } else {
+            FLATS
+        };
+        names[self.pitch() as usize]
+    }
+
+    /// Written as a chord symbol for major and minor ("A", "Am") and by name
+    /// for the other modes ("A Dorian").
+    pub(crate) fn label(self) -> String {
+        let tonic = self.pitch_name();
+        match self.mode {
+            HomeMode::Major => tonic.to_string(),
+            HomeMode::Minor => format!("{tonic}m"),
+            mode => format!("{tonic} {}", mode.label()),
         }
     }
 
-    /// Semitones that carry `progression`'s authored key into this key by the
-    /// shortest way round: -6 through +5, and 0 for Home.
+    /// Semitones that carry `progression`'s authored tonic to this one by
+    /// the shortest way round: -6 through +5.
     pub(crate) fn shift(self, progression: usize) -> i32 {
-        match self {
-            Self::Home => 0,
-            Self::Pitch(pitch) => {
-                (i32::from(pitch) - progression_tonic_pitch_class(progression) + 6).rem_euclid(12)
-                    - 6
-            }
-        }
+        (self.pitch() - progression_tonic_pitch_class(progression) + 6).rem_euclid(12) - 6
+    }
+
+    /// How `progression`'s chords are re-read in this mode.
+    pub(crate) fn mode_map(self, progression: usize) -> ModeMap {
+        ModeMap::new(progression, self.mode)
     }
 }
 

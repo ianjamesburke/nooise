@@ -123,23 +123,22 @@ impl Triad {
     }
 }
 
-/// The Master Mode dial: Home keeps each progression's own mode; the others
-/// set the mode pushes move in. Mode never rewrites a chord already played.
-pub(crate) const MASTER_MODES: [(&str, Option<HomeMode>); 6] = [
-    ("Home", None),
-    ("Major", Some(HomeMode::Major)),
-    ("Minor", Some(HomeMode::Minor)),
-    ("Dorian", Some(HomeMode::Dorian)),
-    ("Phrygian", Some(HomeMode::Phrygian)),
-    ("Mixolydian", Some(HomeMode::Mixolydian)),
+/// The Master Mode dial: the mode every progression is re-read in
+/// (`ModeMap`) and pushes move in.
+pub(crate) const MASTER_MODES: [(&str, HomeMode); 5] = [
+    ("Major", HomeMode::Major),
+    ("Minor", HomeMode::Minor),
+    ("Dorian", HomeMode::Dorian),
+    ("Phrygian", HomeMode::Phrygian),
+    ("Mixolydian", HomeMode::Mixolydian),
 ];
 
-/// The `MASTER_MODES` row a `master.mode` value names.
-pub(crate) fn master_mode(value: f32) -> (&'static str, Option<HomeMode>) {
+/// The `MASTER_MODES` row a `master.key_mode` value names.
+pub(crate) fn master_mode(value: f32) -> (&'static str, HomeMode) {
     MASTER_MODES[wrapped_index(value, MASTER_MODES.len())]
 }
 
-/// The song's home key: the progression's tonic and mode.
+/// A home key in a progression's own coordinates: a tonic and a mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct HomeKey {
     tonic: u8,
@@ -154,19 +153,18 @@ impl HomeKey {
         }
     }
 
-    /// The key a progression is authored in (`progression_home`). Custom has
-    /// an A-minor home.
-    pub(crate) fn of_progression(progression: usize) -> Self {
-        let (tonic, mode, _) = progression_home(progression);
-        Self::new(tonic, mode)
+    /// The home pushes move in: the Master Key and Mode, in `progression`'s
+    /// coordinates (its tonic, which the Master Key shift carries to the
+    /// Master Key).
+    pub(crate) fn of(progression: usize, key: MasterKey) -> Self {
+        Self::new(progression_tonic_pitch_class(progression), key.mode)
     }
 
-    /// The home pushes move in: the progression's tonic, in the Master Mode
-    /// when one is chosen, else the progression's own mode.
     pub(crate) fn of_song(controls: &FluidControls) -> Self {
-        let progression = progression_index(controls.pad.progression);
-        let (tonic, own, _) = progression_home(progression);
-        Self::new(tonic, master_mode(controls.master.mode).1.unwrap_or(own))
+        Self::of(
+            progression_index(controls.pad.progression),
+            MasterKey::from_controls(&controls.master),
+        )
     }
 
     /// `triad` as a Roman numeral in this key: its degree, flat (or sharp
@@ -649,31 +647,34 @@ mod tests {
         assert_eq!(HarmonyMove::Home.apply(far, A_MINOR), am());
     }
 
-    /// Mode Home follows each progression's own mode; a chosen mode keeps
-    /// the progression's tonic and changes what steps and home produce.
+    /// A derived song pushes in the progression's own home; a chosen mode
+    /// keeps the progression's tonic and changes what steps and home produce.
     #[test]
     fn the_master_mode_sets_the_home_pushes_move_in() {
         let mut controls = FluidControls::default();
         for progression in 0..=CUSTOM_PROGRESSION_INDEX {
             controls.pad.progression = progression as f32;
-            controls.master.mode = 0.0;
-            assert_eq!(
-                HomeKey::of_song(&controls),
-                HomeKey::of_progression(progression)
-            );
+            controls.derive_key();
+            let (tonic, mode, _) = progression_home(progression);
+            assert_eq!(HomeKey::of_song(&controls), HomeKey::new(tonic, mode));
         }
         controls.pad.progression = 0.0; // A minor
+        controls.derive_key();
         let am = Triad::new(A, TriadQuality::Minor);
         let named = |controls: &FluidControls, harmony_move: HarmonyMove| {
             harmony_move.apply(am, HomeKey::of_song(controls)).name(0)
         };
         assert_eq!(named(&controls, HarmonyMove::StepUp), "Bdim");
-        controls.master.mode = 3.0; // Dorian
+        controls.master.mode = 2.0; // Dorian
         assert_eq!(named(&controls, HarmonyMove::StepUp), "Bm");
-        controls.master.mode = 1.0; // Major
+        controls.master.mode = 0.0; // Major
         assert_eq!(named(&controls, HarmonyMove::Home), "A");
         assert_eq!(named(&controls, HarmonyMove::StepDown), "Abdim");
         assert_eq!(master_mode(controls.master.mode).0, "Major");
+        // The Master Key moves the home with it: a C key homes on C's
+        // degree in the progression's coordinates, still A there.
+        controls.master.key = 0.0;
+        assert_eq!(named(&controls, HarmonyMove::Home), "A");
     }
 
     #[test]
@@ -755,17 +756,15 @@ mod tests {
             (HomeMode::Phrygian, "A Phrygian"),
             (HomeMode::Mixolydian, "A Mixolydian"),
         ] {
-            assert_eq!(
-                progression_home_label(0, MasterKey::Home, Some(mode)),
-                expected
-            );
+            assert_eq!(MasterKey::new(A, mode).label(), expected);
         }
     }
 
     #[test]
     fn every_built_in_chord_reads_as_a_triad_on_its_own_root() {
         for (index, progression) in PROGRESSIONS.iter().enumerate() {
-            let key = HomeKey::of_progression(index);
+            let (tonic, mode, _) = progression_home(index);
+            let key = HomeKey::new(tonic, mode);
             for chord in &progression.chords {
                 let (harmony, _) = chord_from_slot(&chord.preset);
                 let triad = Triad::from_harmony(&harmony, key);

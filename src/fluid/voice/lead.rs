@@ -258,12 +258,13 @@ pub(crate) fn lead_tone_label(tone: usize, reach_len: usize) -> String {
 pub(crate) fn lead_reach(
     follow: LeadFollow,
     pad: &PadControls,
+    key: MasterKey,
     progression: usize,
     slot: usize,
 ) -> LeadReach {
     match follow {
         LeadFollow::Chord => {
-            let chord = pad_chord_tones(pad, progression, slot);
+            let chord = pad_chord_tones(pad, key, progression, slot);
             let mut notes = [0; LEAD_REACH_MAX];
             notes[..chord.len()].copy_from_slice(&chord);
             LeadReach {
@@ -271,15 +272,17 @@ pub(crate) fn lead_reach(
                 len: chord.len(),
             }
         }
-        LeadFollow::Scale => progression_scale(pad, progression),
+        LeadFollow::Scale => progression_scale(key, progression),
     }
 }
 
-/// Seven home-key notes, unchanged by chord-window edits or borrowed chords.
-pub(crate) fn progression_scale(_pad: &PadControls, progression: usize) -> LeadReach {
-    let (tonic, mode, _) = progression_home(progression);
+/// Seven notes of the Master Mode from `progression`'s tonic (the Master
+/// Key shift carries them to the Master Key), unchanged by chord-window
+/// edits or borrowed chords.
+pub(crate) fn progression_scale(key: MasterKey, progression: usize) -> LeadReach {
+    let (tonic, _, _) = progression_home(progression);
     let mut notes = [0; LEAD_REACH_MAX];
-    for (index, interval) in mode.intervals().into_iter().enumerate() {
+    for (index, interval) in key.mode.intervals().into_iter().enumerate() {
         notes[index] = tonic + interval;
     }
     LeadReach { notes, len: 7 }
@@ -311,12 +314,13 @@ pub(crate) fn lead_step_label(value: f32, reach: &LeadReach) -> String {
 
 /// The reach a page reads its labels against: the lane's tones are named
 /// by degree, which depends only on the reach's size, so the chord playing
-/// need not be known to label the page.
+/// (and the key it is read in) need not be known to label the page.
 pub(crate) fn lead_page_reach(lead: &LeadControls, pad: &PadControls) -> LeadReach {
     let window = ChordWindow::requested(pad);
     lead_reach(
         LeadFollow::from_value(lead.follow),
         pad,
+        MasterKey::of_progression(window.progression),
         window.progression,
         window.slot(0),
     )
@@ -327,6 +331,7 @@ pub(crate) fn tonal_page_reach(tonal: &TonalControls, pad: &PadControls) -> Lead
     lead_reach(
         LeadFollow::from_value(tonal.follow),
         pad,
+        MasterKey::of_progression(window.progression),
         window.progression,
         window.slot(0),
     )
@@ -791,8 +796,13 @@ impl LeadEngine {
                         .ties_after(lane_step, |step| lead_step_is_tie(self.evolved_steps[step]));
                     let hold_for_tie = tied_steps > 0;
                     self.lane_holding = hold_for_tie;
-                    let reach =
-                        lead_reach(LeadFollow::from_value(c.follow), pad, progression, slot);
+                    let reach = lead_reach(
+                        LeadFollow::from_value(c.follow),
+                        pad,
+                        key,
+                        progression,
+                        slot,
+                    );
                     let note = reach.note(tone, c.octave);
                     if c.level != 0.0 {
                         self.play(note, tune, c, hold_for_tie);
@@ -821,7 +831,13 @@ impl LeadEngine {
             && let Some(tone) = lead_step_tone(pressed as f32)
         {
             self.lane_holding = false;
-            let reach = lead_reach(LeadFollow::from_value(c.follow), pad, progression, slot);
+            let reach = lead_reach(
+                LeadFollow::from_value(c.follow),
+                pad,
+                key,
+                progression,
+                slot,
+            );
             let note = reach.note(tone, c.octave);
             if c.level != 0.0 {
                 self.play(note, tune, c, hold);

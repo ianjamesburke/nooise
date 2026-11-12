@@ -10,21 +10,35 @@ use crate::synth::oscillator::PolyBlepSaw;
 /// Bass follows the same active progression slot as Pad/Arp. For Custom it
 /// reads that slot's root directly. Built-ins retain their authored Bass
 /// register/pedal and transpose only by an edited Root/Accidental delta.
-/// A pushed chord's root moves the line by its distance from the slot's own
-/// root, within a tritone, so the Bass stays in its authored register.
-pub(crate) fn bass_root_note(progression: usize, slot: usize, pad: &PadControls) -> i32 {
+/// Either way the note is re-read in the Master Mode with its chord
+/// (`ModeMap::bass`). A pushed chord's root moves the line by its distance
+/// from the slot's re-read root, within a tritone, so the Bass stays in its
+/// authored register.
+pub(crate) fn bass_root_note(
+    progression: usize,
+    slot: usize,
+    pad: &PadControls,
+    key: MasterKey,
+) -> i32 {
     let slot = slot % CHORD_SLOT_COUNT;
-    let slot_root = pad_chord_root_note(pad.chord_slot(progression, slot));
-    let root = pad
-        .held_at(slot)
-        .map_or(slot_root, |held| root_near(held.triad.root(), slot_root));
-    match PROGRESSIONS.get(progression) {
+    let chord = pad.chord_slot(progression, slot);
+    let map = key.mode_map(progression);
+    let authored_root = pad_chord_root_note(chord);
+    let authored = match PROGRESSIONS.get(progression) {
         Some(built_in) => {
             let built_in_slot = slot % BUILTIN_PROGRESSION_CHORDS;
-            let shift = root - pad_chord_root_note(&built_in.chords[built_in_slot].preset);
+            let shift = authored_root - pad_chord_root_note(&built_in.chords[built_in_slot].preset);
             built_in.bass[built_in_slot] + shift
         }
-        None => root,
+        None => authored_root,
+    };
+    let note = map.bass(chord, authored);
+    match pad.held_at(slot) {
+        Some(held) => {
+            let slot_root = map.bass(chord, authored_root);
+            note + root_near(held.triad.root(), slot_root) - slot_root
+        }
+        None => note,
     }
 }
 
@@ -80,6 +94,7 @@ pub(crate) fn bass_page_reach(bass: &BassControls, pad: &PadControls) -> LeadRea
     lead_reach(
         LeadFollow::from_value(bass.follow),
         pad,
+        MasterKey::of_progression(window.progression),
         window.progression,
         window.slot(0),
     )
@@ -91,22 +106,23 @@ pub(crate) fn bass_step_note(
     progression: usize,
     slot: usize,
     pad: &PadControls,
+    key: MasterKey,
     octave: f32,
 ) -> i32 {
     let octave_shift = (octave.round() as i32) * 12;
     match follow {
         LeadFollow::Chord => {
-            let root = bass_root_note(progression, slot, pad);
+            let root = bass_root_note(progression, slot, pad, key);
             if tone <= 1 {
                 root + octave_shift
             } else {
-                let reach = lead_reach(LeadFollow::Chord, pad, progression, slot);
+                let reach = lead_reach(LeadFollow::Chord, pad, key, progression, slot);
                 let semitones_above_first = reach.note(tone, 0.0) - reach.note(1, 0.0);
                 root + semitones_above_first + octave_shift
             }
         }
         LeadFollow::Scale => {
-            let reach = progression_scale(pad, progression);
+            let reach = progression_scale(key, progression);
             reach.note(tone, octave) - 12
         }
     }
@@ -344,7 +360,7 @@ impl BassEngine {
                 && let Some(tone) = lead_step_tone(self.evolved_steps[rhythm_step])
             {
                 let follow = LeadFollow::from_value(c.follow);
-                let note = bass_step_note(tone, follow, progression, slot, pad, c.octave);
+                let note = bass_step_note(tone, follow, progression, slot, pad, key, c.octave);
                 let ties = consecutive_ties_after(&self.evolved_steps, rhythm_step, live_steps);
                 let hold_beats = ties as f32 * rate_beats;
                 let hold_seconds = if ties > 0 {

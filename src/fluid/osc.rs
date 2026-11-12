@@ -1548,7 +1548,12 @@ mod tests {
             ..PadControls::default()
         };
         let telemetry = Arc::new(FluidTelemetry::default());
-        let mut pad = PadEngine::new(48_000.0, &controls, MasterKey::Home, Arc::clone(&telemetry));
+        let mut pad = PadEngine::new(
+            48_000.0,
+            &controls,
+            MasterKey::of_progression(0),
+            Arc::clone(&telemetry),
+        );
         let mut mirrored = Mirrored::from(&telemetry);
         fn tick(
             pad: &mut PadEngine,
@@ -1560,7 +1565,7 @@ mod tests {
         ) -> Vec<OscMessage> {
             let mut timing = TimingContext::new(48_000.0, 120.0, beat);
             timing.morph_phrase_start = morph_start;
-            pad.next(controls, MasterKey::Home, timing);
+            pad.next(controls, MasterKey::of_progression(0), timing);
             mirrored.diff(telemetry, true)
         }
         let tick_at = |pad: &mut PadEngine, mirrored: &mut Mirrored, beat, morph_start| {
@@ -1596,7 +1601,7 @@ mod tests {
 
         let mut stopped = TimingContext::new(48_000.0, 120.0, 2.0);
         stopped.transport = crate::fluid::engine::Transport::Stopped;
-        pad.next(&controls, MasterKey::Home, stopped);
+        pad.next(&controls, MasterKey::of_progression(0), stopped);
         assert!(mirrored.diff(&telemetry, true).is_empty());
         pad.restart_sequence(&controls);
         let restart = tick_at(&mut pad, &mut mirrored, 0.0, None);

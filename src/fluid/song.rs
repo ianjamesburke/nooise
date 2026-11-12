@@ -16,7 +16,9 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use super::push::{HarmonyEvent, HarmonyLoop, HeldChord, PushedHarmony};
 use super::range_epoch::{CURRENT_RANGE_EPOCH, DRUNKEN_WAVE_EPOCH, stale_modulation};
 use super::song_ids::{song_id_at, song_id_index};
-use super::voice::{TONAL_MAX_LOOP_STEPS, TonalSequenceState, Triad, TriadQuality};
+use super::voice::{
+    MasterKey, TONAL_MAX_LOOP_STEPS, TonalSequenceState, Triad, TriadQuality, progression_index,
+};
 use super::{
     AutomationState, CHORD_SLOT_COUNT, CLAP_STEP_COUNT, CUSTOM_TONAL_PHRASE_INDEX, ControlAddress,
     ControlKind, ControlSpec, DEFAULT_LFO_DEPTH_RATIO, EditorMotionAddress, EditorMotionField,
@@ -2054,6 +2056,12 @@ fn write_snapshot(controls: &FluidControls, out: &mut Vec<u8>) -> Result<(), Son
     defaults.clap.pattern = 0.0;
     defaults.lead.apply_pattern_preset(controls.lead.pattern);
     defaults.lead.pattern = 1.0;
+    // The Master Key and Mode default to the progression's own: a code
+    // spells them only when they were changed (`read_snapshot` derives them).
+    let (key, mode) =
+        MasterKey::of_progression(progression_index(controls.pad.progression)).dial_values();
+    defaults.master.key = key;
+    defaults.master.mode = mode;
     let mut entries = Vec::new();
     let mut seen = BTreeSet::new();
 
@@ -2094,6 +2102,8 @@ fn read_snapshot(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongC
         entries.push((index, value));
     }
 
+    // A Master Key or Mode the code leaves out is the progression's own.
+    let mut spelled = (false, false);
     // A slot's kind and Delay clock modes define the units of its remaining
     // fields. Resolve those structural values first regardless of registry or
     // song-id order, then decode the parameters through the established unit.
@@ -2119,6 +2129,8 @@ fn read_snapshot(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongC
             if is_structural != structural {
                 continue;
             }
+            spelled.0 |= id == "master.key";
+            spelled.1 |= id == "master.key_mode";
             if let Some(spec) = control_at(index) {
                 let spec = spec.contextual(controls);
                 // Rhythm moved out of `degree` into `gate`, narrowing the
@@ -2142,6 +2154,14 @@ fn read_snapshot(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongC
                 reject_retired_control(index)?;
             }
         }
+    }
+    let derived =
+        MasterKey::of_progression(progression_index(controls.pad.progression)).dial_values();
+    if !spelled.0 {
+        controls.master.key = derived.0;
+    }
+    if !spelled.1 {
+        controls.master.mode = derived.1;
     }
     Ok(())
 }

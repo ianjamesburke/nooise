@@ -2655,7 +2655,7 @@ fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionE
         Operation::Harmony(action) => InteractionEffect::Harmony(action),
         Operation::HarmonyQuantize(quantize) => InteractionEffect::SetHarmonyQuantize(quantize),
         Operation::SetMode(index) => InteractionEffect::PaletteCommit(vec![PaletteStagedEdit {
-            id: "master.mode",
+            id: "master.key_mode",
             value_bits: f32::from(index).to_bits(),
         }]),
         Operation::SetKey(index) => InteractionEffect::PaletteCommit(vec![PaletteStagedEdit {

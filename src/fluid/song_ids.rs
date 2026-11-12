@@ -996,6 +996,7 @@ const SONG_ID_TABLE: &[&str] = &[
     "pad.chord15_gate",
     "pad.chord16_gate",
     "master.mode",
+    "master.key_mode",
 ];
 
 /// Index of `id` in the song-code id table, or `None` if the control has

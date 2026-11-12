@@ -5133,7 +5133,15 @@ fn chord_builder_opens_every_progression_without_authoring_on_both_terminal_prof
                     .iter()
                     .any(|frame| frame.text.contains("Root"))
             );
-            let name = pad_chord_name(&song.controls.pad, progression, 0, ChordLabels::default());
+            let name = pad_chord_name(
+                &song.controls.pad,
+                progression,
+                0,
+                ChordLabels {
+                    names: ChordNames::Roman,
+                    key: MasterKey::from_controls(&song.controls.master),
+                },
+            );
             assert!(result.frames.iter().any(|frame| frame.text.contains(&name)));
             assert!(result.frames.iter().any(|frame| {
                 frame
@@ -6435,10 +6443,11 @@ fn the_palette_sets_mode_and_key_and_mode_is_saved() {
         1 << 1,
     ));
     let result = replay(&trace, TerminalCapabilities::full());
-    assert_eq!(result.control("master.mode"), Some(3.0));
-    assert_eq!(result.control("master.key"), Some(3.0));
+    assert_eq!(result.control("master.key_mode"), Some(2.0));
+    assert_eq!(result.control("master.key"), Some(2.0));
     let saved = decode_song_code(result.saved_automation_code.as_deref().unwrap()).unwrap();
-    assert_eq!(saved.controls.master.mode, 3.0);
+    assert_eq!(saved.controls.master.mode, 2.0);
+    assert_eq!(saved.controls.master.key, 2.0);
     let frame = &result.frames.last().unwrap().text;
     assert!(frame.contains("D Dorian"), "{frame}");
 }

@@ -227,6 +227,14 @@ Landed:
   refuses a stored chord-degree value below the new minimum rather than
   clamping it. All 16 gate ids appended to `SONG_ID_TABLE`.
 
+- Master Mode re-read — `voice/mode_map.rs` resolves every progression
+  chord relative to the concrete Master Key and Mode (`ModeMap::cell`):
+  diatonic harmony moves by scale degree, extensions stay only where the new
+  scale has them, sus/power/borrowed chords keep their notes, and the stored
+  progression is never rewritten. It works on `Cell` (harmony + voicing), so
+  naming (`cell_chord_name`, `cell_roman_name`) reads the resolved cell, not
+  the slot fields.
+
 Remaining (the lane + voicing epic):
 
 - `PadControls.chord_slots` and `chord_overrides` become `[Cell; 16]`;
@@ -237,8 +245,6 @@ Remaining (the lane + voicing epic):
   voices from a mode and a manual tone edit selects Custom, mirroring how
   `arp.pattern` seeds `arp.step1..16`. Per-tone rows live in a `Voicing ›`
   detail so the step editor keeps its nine rows.
-- Naming (`custom_chord_name`, `roman_chord_name`) reads `Cell`/`Harmony`
-  instead of `ChordSlotControls`.
 - Re-author `AUTO_STATES` through the current encoder (`just add-morph`).
 - Retire `legacy_chord_notes` and the `chord_from_slot` bridge.
 

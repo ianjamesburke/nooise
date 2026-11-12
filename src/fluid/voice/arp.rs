@@ -331,7 +331,7 @@ impl ArpEngine {
                 .enumerate()
                 .filter_map(|(note, held)| held.then_some(note as i32))
                 .collect();
-            let chord = pad_chord_tones(pad, progression, slot);
+            let chord = pad_chord_tones(pad, key, progression, slot);
             let notes = if held.is_empty() {
                 arp_cycle_notes(chord, octaves)
             } else {
@@ -410,7 +410,7 @@ impl ArpEngine {
                     if !held.is_empty() || LeadFollow::from_value(c.follow) == LeadFollow::Chord {
                         notes[tone_idx % len]
                     } else {
-                        let scale = progression_scale(pad, progression);
+                        let scale = progression_scale(key, progression);
                         if tone_idx < LEAD_TONE_COUNT {
                             scale.note(tone_idx + 1, 0.0)
                         } else {

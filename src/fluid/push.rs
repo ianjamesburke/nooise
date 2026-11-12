@@ -521,10 +521,18 @@ impl PushedHarmony {
     }
 }
 
-/// The progression chord sounding on `slot`, heard as a triad in its home key.
-pub(crate) fn authored_triad(pad: &PadControls, progression: usize, slot: usize) -> Triad {
-    let cell = Cell::from_slot(pad.chord_slot(progression, slot));
-    Triad::from_harmony(&cell.harmony, HomeKey::of_progression(progression))
+/// The progression chord sounding on `slot`, re-read in the Master Mode and
+/// heard as a triad in the home pushes move in.
+pub(crate) fn authored_triad(
+    pad: &PadControls,
+    key: MasterKey,
+    progression: usize,
+    slot: usize,
+) -> Triad {
+    let cell = key
+        .mode_map(progression)
+        .cell(pad.chord_slot(progression, slot));
+    Triad::from_harmony(&cell.harmony, HomeKey::of(progression, key))
 }
 
 #[cfg(test)]

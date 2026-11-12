@@ -371,7 +371,7 @@ impl HarmonyView {
         let labels = session.chord_labels();
         let key = HomeKey::of_song(&session.controls);
         let write = |triad: Triad| triad.label(labels, key, progression);
-        let authored = authored_triad(pad, progression, active_slot);
+        let authored = authored_triad(pad, labels.key, progression, active_slot);
         let push = &session.push;
         let base = push.base(authored, beat);
         let sounding = push.sounding(beat);
@@ -1526,6 +1526,7 @@ mod tests {
         assert!(frame.contains("Master"), "{frame}");
 
         session.controls.pad.progression = 4.0;
+        session.controls.derive_key();
         let borrowed =
             render_model_with_session_at(&interaction, &session, TelemetryView::default());
         assert!(borrowed.contains("KEY␠␠A␠Phrygian"), "{borrowed}");
@@ -1536,7 +1537,7 @@ mod tests {
         let interaction = InteractionModel::default();
         let mut session = session();
         session.controls.pad.progression = 0.0;
-        session.controls.master.key = 1.0;
+        session.controls.master.key = 0.0;
         session.chord_names = ChordNames::Letters;
         let frame = render_model_with_session(&interaction, &session);
         assert!(frame.contains("KEY␠␠Cm␠"), "{frame}");
@@ -1554,20 +1555,30 @@ mod tests {
         assert!(frame.contains("CHORDS␠␠i7add11␠›␠VIIsus2add11"), "{frame}");
         assert!(!frame.contains("Am7add11"), "{frame}");
 
-        // Master Mode Major on Drift's A tonic: the same chords read as
-        // borrowed against A major, and the key reads `A`.
-        session.controls.master.mode = 1.0;
+        // Master Mode Major on Drift's A tonic: the diatonic Am11 is re-read
+        // as the major I chord; the Gsus2 (no third) keeps its notes and
+        // reads as borrowed against A major. The key reads `A`.
+        session.controls.master.mode = 0.0;
         let major = render_model_with_session(&interaction, &session);
         assert!(major.contains("KEY␠␠A␠"), "{major}");
-        assert!(major.contains("CHORDS␠␠i7add11␠›␠bVIIsus2add11"), "{major}");
-        session.controls.master.mode = 5.0;
+        assert!(
+            major.contains("CHORDS␠␠Imaj7add11␠›␠bVIIsus2add11"),
+            "{major}"
+        );
+        session.controls.master.mode = 4.0;
         let mixolydian = render_model_with_session(&interaction, &session);
         assert!(mixolydian.contains("KEY␠␠A␠Mixolydian"), "{mixolydian}");
-        assert!(mixolydian.contains("VIIsus2add11"), "{mixolydian}");
+        assert!(
+            mixolydian.contains("CHORDS␠␠I7add11␠›␠VIIsus2add11"),
+            "{mixolydian}"
+        );
 
         session.chord_names = ChordNames::Letters;
         let letters = render_model_with_session(&interaction, &session);
-        assert!(letters.contains("CHORDS␠␠Am7add11"), "{letters}");
+        assert!(
+            letters.contains("CHORDS␠␠A7add11␠›␠Gsus2add11␠›␠A␠›␠Em7/B"),
+            "{letters}"
+        );
     }
 
     #[test]
@@ -1641,7 +1652,7 @@ mod tests {
         let mut session = session();
         let mut push = PushedHarmony::default();
         push.set_quantize(PushQuantize::OneBar, 0.0);
-        let key = HomeKey::of_progression(0);
+        let key = HomeKey::of(0, MasterKey::of_progression(0));
         let am = Triad::new(9, TriadQuality::Minor);
         push.push(HarmonyMove::Relative, key, am, 0.5);
         push.land([45, 48, 52, 57], 0);

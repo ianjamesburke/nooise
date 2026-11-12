@@ -913,11 +913,12 @@ impl EffectExecutor {
                 if !self.session.audio_clock_active() && self.session.load().push.is_due(beat) {
                     let snapshot = self.session.update(|snapshot| {
                         let pad = &snapshot.controls.pad;
+                        let key = MasterKey::from_controls(&snapshot.controls.master);
                         let progression = progression_index(pad.progression);
                         let slot = usize::from(
                             sounding_chord(pad, beat, self.session.audio_phrase_start()).1,
                         );
-                        let authored = pad_chord_tones(pad, progression, slot);
+                        let authored = pad_chord_tones(pad, key, progression, slot);
                         let sounding = snapshot
                             .push
                             .sounding(beat)
@@ -927,7 +928,7 @@ impl EffectExecutor {
                             // audio clock would have logged it.
                             snapshot.push.heard.record(HarmonyEvent {
                                 at: 0.0,
-                                triad: authored_triad(pad, progression, slot),
+                                triad: authored_triad(pad, key, progression, slot),
                                 notes: authored,
                             });
                         }
@@ -1312,12 +1313,9 @@ impl EffectExecutor {
                 Some(vamp) => usize::from(vamp.slot),
                 None => usize::from(sounding_chord(pad, beat, phrase_start).1),
             };
-            let authored = authored_triad(pad, progression, slot);
-            write = Some((
-                snapshot.chord_labels(),
-                HomeKey::of_song(&snapshot.controls),
-                progression,
-            ));
+            let labels = snapshot.chord_labels();
+            let authored = authored_triad(pad, labels.key, progression, slot);
+            write = Some((labels, HomeKey::of_song(&snapshot.controls), progression));
             quantize = snapshot.push.quantize;
             outcome =
                 snapshot

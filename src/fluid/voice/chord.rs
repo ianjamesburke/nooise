@@ -209,12 +209,12 @@ pub(crate) fn chord_pitch_name(note: i32) -> &'static str {
     ][note.rem_euclid(12) as usize]
 }
 
-/// Name the four source notes, including tones introduced by Close's
-/// inversion/doubling rule. Output-count thinning does not rename harmony.
-/// The chord's letter name with every pitch moved by `shift` semitones, the
-/// Master Key's shift for its progression.
-pub(crate) fn custom_chord_name(slot: &ChordSlotControls, shift: i32) -> String {
-    let parts = chord_name_parts(slot);
+/// A resolved chord's letter name, naming its four sounding notes (including
+/// tones introduced by Close's inversion/doubling rule), every pitch moved by
+/// `shift` semitones, the Master Key's shift for its progression.
+/// Output-count thinning does not rename harmony.
+pub(crate) fn cell_chord_name(cell: &Cell, shift: i32) -> String {
+    let parts = chord_name_parts(cell);
     let mut name = format!("{}{}", chord_pitch_name(parts.root + shift), parts.body);
     if let Some(bass) = parts.bass {
         name.push('/');
@@ -231,9 +231,10 @@ struct ChordNameParts {
     bass: Option<i32>,
 }
 
-fn chord_name_parts(slot: &ChordSlotControls) -> ChordNameParts {
-    let root = pad_chord_root_note(slot);
-    let notes = pad_chord_notes_with_slot(slot);
+fn chord_name_parts(cell: &Cell) -> ChordNameParts {
+    let harmony = cell.harmony;
+    let root = harmony.root_note();
+    let notes = cell.notes();
     let has = |interval| {
         notes
             .iter()
@@ -243,7 +244,7 @@ fn chord_name_parts(slot: &ChordSlotControls) -> ChordNameParts {
         "m"
     } else if has(4) {
         ""
-    } else if slot.quality.round() == 3.0 && has(5) {
+    } else if harmony.quality == Quality::Sus4 && has(5) {
         "sus4"
     } else if has(2) {
         "sus2"
@@ -252,11 +253,9 @@ fn chord_name_parts(slot: &ChordSlotControls) -> ChordNameParts {
     } else {
         "5"
     };
-    let (roles, role_count) = source_intervals(slot);
-    let diminished = chord_fifth_interval(slot) == Some(6)
-        && roles[..role_count].contains(&6)
-        && has(6)
-        && !has(7);
+    let (roles, role_count) = harmony.intervals();
+    let diminished =
+        harmony.fifth == Some(6) && roles[..role_count].contains(&6) && has(6) && !has(7);
     let seventh = if has(11) {
         "maj7"
     } else if has(10) {
@@ -323,15 +322,13 @@ pub(crate) enum ChordNames {
     Roman,
 }
 
-/// Everything a chord's on-screen name depends on: letters or Roman, the
-/// Master Key letters are written in, and the Master Mode Roman reads in
-/// (`None`, Home, reads each progression in its own mode). Roman reads
-/// against the home key, so the Master Key never changes it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// Everything a chord's on-screen name depends on: letters or Roman, and the
+/// Master Key and Mode, which re-read the chord, write its letters and set
+/// the home Roman numerals read against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ChordLabels {
     pub(crate) names: ChordNames,
     pub(crate) key: MasterKey,
-    pub(crate) mode: Option<HomeMode>,
 }
 
 /// A chord as a Roman numeral against a home key: the root's degree in the
@@ -339,8 +336,8 @@ pub(crate) struct ChordLabels {
 /// for a major chord and lower case for a minor or diminished one. A chord
 /// with no third (power, suspended) takes the case of the home mode's own
 /// triad on that degree. A slash bass is its degree in the same mode ("I/3").
-pub(crate) fn roman_chord_name(slot: &ChordSlotControls, tonic: i32, mode: HomeMode) -> String {
-    let parts = chord_name_parts(slot);
+pub(crate) fn cell_roman_name(cell: &Cell, tonic: i32, mode: HomeMode) -> String {
+    let parts = chord_name_parts(cell);
     let (accidental, degree) = scale_degree(parts.root - tonic, mode);
     let diminished = parts.body.starts_with("dim");
     // A chord with no third takes the case of the mode's own triad there.

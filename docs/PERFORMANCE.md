@@ -331,14 +331,21 @@ clock, and a loaded code always starts at beat zero anyway.
 
 ## Master Mode
 
-The Master page has Key (the existing Master Key) and Mode: Home (the
-default, each progression's own mode), Major, Minor, Dorian, Phrygian or
-Mixolydian. Mode sets the home pushes move in: scale steps walk that mode,
-step chords take its qualities, and `a` goes to its tonic chord. It never
-rewrites the progression, a loop or the chord sounding now, so played colour
-and borrowed chords are never lost; changing Key or Mode mid-push leaves the
-sounding chord alone and only later moves follow the new home. To hear a
-loop in another mode, push it there and grab it again. The header names the
+The Master page has Key (C through B) and Mode (Major, Minor, Dorian,
+Phrygian or Mixolydian), always concrete. Launch and loading a song set both
+to the progression's own key, so a song sounds as authored until they move;
+choosing another progression keeps them, and it plays in them. The
+progression is read relative to them: Key transposes it, and Mode re-reads
+each diatonic chord on its degree (Harvest's Fmaj7 becomes Fm7 in F minor)
+while sus, power and borrowed chords keep their notes, and the Bass under a
+re-read chord moves with it. The authored progression is never rewritten.
+An authored chord re-voices at once through the pad's Attack/Release, like
+a chord edit. Mode is also the home pushes move in: scale steps walk it,
+step chords take its qualities, and `a` goes to its tonic chord. A pushed
+chord and a loop keep the notes they were given; changing Key or Mode
+mid-push leaves the sounding pushed chord alone and only later moves follow
+the new home. To hear a loop in another mode, push it there and grab it
+again. The header names the
 home (`KEY  Am`, `KEY  A`, `KEY  A Dorian`), and chords in the header and
 the Space overlay read as Roman numerals in that home: upper case major,
 lower case minor, `°` diminished, a flat for a root off the scale (`bVI`),

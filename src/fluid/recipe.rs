@@ -337,13 +337,13 @@ mod tests {
         let mut reference = PadEngine::new(
             8_000.0,
             &controls,
-            MasterKey::Home,
+            MasterKey::of_progression(0),
             Arc::new(FluidTelemetry::default()),
         );
         let mut chopped = PadEngine::new(
             8_000.0,
             &controls,
-            MasterKey::Home,
+            MasterKey::of_progression(0),
             Arc::new(FluidTelemetry::default()),
         );
         reference.rng = StdRng::seed_from_u64(7);
@@ -357,7 +357,7 @@ mod tests {
             let beat = frame as f64 / 4_000.0;
             let timing = TimingContext::new(8_000.0, 120.0, beat);
             controls.level = base;
-            let dry = reference.next(&controls, MasterKey::Home, timing);
+            let dry = reference.next(&controls, MasterKey::of_progression(0), timing);
             controls.level = modulated_control_value_full(
                 spec_by_id("pad.level").unwrap(),
                 &[route],
@@ -365,7 +365,7 @@ mod tests {
                 base,
                 ModContext { beat },
             );
-            let wet = chopped.next(&controls, MasterKey::Home, timing);
+            let wet = chopped.next(&controls, MasterKey::of_progression(0), timing);
             assert_eq!(reference.layers.len(), chopped.layers.len());
             for (original, gated) in reference.layers.iter().zip(&chopped.layers) {
                 for (a, b) in original.tones.iter().zip(&gated.tones) {

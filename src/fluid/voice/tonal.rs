@@ -467,7 +467,13 @@ impl TonalEngine {
                 && has_source
             {
                 let tone = tone.min(LEAD_TONE_COUNT);
-                let reach = lead_reach(LeadFollow::from_value(c.follow), pad, progression, slot);
+                let reach = lead_reach(
+                    LeadFollow::from_value(c.follow),
+                    pad,
+                    key,
+                    progression,
+                    slot,
+                );
                 let note = reach.note(tone, c.octave);
                 let hz = note_hz(note, tune);
                 if c.level != 0.0 {
@@ -656,7 +662,7 @@ pub(crate) fn tonal_phrase(phrase: usize) -> &'static [i32] {
 /// Resolve a 1-based tone degree in `progression`'s home scale.
 #[cfg(test)]
 pub(crate) fn tonal_home_note(source_note: i32, progression: usize) -> i32 {
-    progression_scale(&PadControls::default(), progression)
+    progression_scale(MasterKey::of_progression(progression), progression)
         .note(source_note.clamp(1, LEAD_TONE_COUNT as i32) as usize, 0.0)
 }
 

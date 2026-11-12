@@ -7,8 +7,8 @@ use std::sync::Arc;
 use super::module::LayerModules;
 use super::push::HeldChord;
 use super::voice::{
-    CUSTOM_PROGRESSION_INDEX, LeadPattern, PROGRESSIONS, SEQUENCE_STEP_COUNT, arp_generate_steps,
-    arp_pattern_from_control, progression_index,
+    CUSTOM_PROGRESSION_INDEX, LeadPattern, MasterKey, PROGRESSIONS, SEQUENCE_STEP_COUNT,
+    arp_generate_steps, arp_pattern_from_control, progression_index,
 };
 
 pub(crate) const MASTER_BPM_MIN: f32 = 30.0;
@@ -22,8 +22,8 @@ pub(crate) struct MasterControls {
     pub(crate) bpm: f32,
     pub(crate) level: f32,
     pub(crate) tone: f32,           // -1 (bass) to +1 (treble)
-    pub(crate) key: f32,            // 0 = each progression's own key, 1..=12 = C..B
-    pub(crate) mode: f32,           // 0 = the progression's own mode, else MASTER_MODES
+    pub(crate) key: f32,            // pitch class, 0..=11 = C..B
+    pub(crate) mode: f32,           // MASTER_MODES row
     pub(crate) swing: f32,          // fallback for voices without a Swing module
     pub(crate) drunken_amount: f32, // 0..1, derived from the Master module
     pub(crate) drunken_pace: f32,   // nominal rise-and-fall length in trigger hits
@@ -35,8 +35,10 @@ impl Default for MasterControls {
             bpm: 82.0,
             level: 0.8,
             tone: 0.0,
-            key: 0.0,
-            mode: 0.0,
+            // A minor: the default progression's (Drift's) own key, so a
+            // default song is already derived (`FluidControls::derive_key`).
+            key: 9.0,
+            mode: 1.0,
             swing: 0.0,
             drunken_amount: 0.0,
             drunken_pace: 7.0,
@@ -247,6 +249,19 @@ impl ChordSlotControls {
 /// default active length of `pad.chord_count`.
 pub(crate) const BUILTIN_PROGRESSION_CHORDS: usize = 8;
 pub(crate) const DEFAULT_CHORD_COUNT: usize = 8;
+
+impl FluidControls {
+    /// Set the Master Key and Mode to the progression's own, so it sounds
+    /// exactly as authored. Launch and song loading call it; changing the
+    /// progression afterwards keeps the Master Key, which the new
+    /// progression is then read in.
+    pub(crate) fn derive_key(&mut self) {
+        let (key, mode) =
+            MasterKey::of_progression(progression_index(self.pad.progression)).dial_values();
+        self.master.key = key;
+        self.master.mode = mode;
+    }
+}
 
 /// Number of chord sequence steps (`PadControls::chord_slots`), and the max of
 /// `pad.chord_count`.

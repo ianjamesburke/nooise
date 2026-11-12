@@ -15,7 +15,10 @@ use super::*;
 
 /// Epoch this build writes. Always the newest `RANGE_CHANGES` entry
 /// (`current_range_epoch_is_the_newest_change`).
-pub(crate) const CURRENT_RANGE_EPOCH: u16 = ON_KICK_RETIRED_EPOCH;
+pub(crate) const CURRENT_RANGE_EPOCH: u16 = MASTER_KEY_CONCRETE_EPOCH;
+/// The Master Key lost its Home position: the dial is C..B, twelve
+/// positions instead of thirteen, so a sweep's depth covers other keys.
+pub(crate) const MASTER_KEY_CONCRETE_EPOCH: u16 = 17;
 /// The On Kick envelope trigger was retired, so the Trigger field's dial
 /// lost a choice and every Motion position on it means another trigger.
 pub(crate) const ON_KICK_RETIRED_EPOCH: u16 = 16;
@@ -297,6 +300,11 @@ const RANGE_CHANGES: &[RangeChange] = &[
     RangeChange {
         epoch: ON_KICK_RETIRED_EPOCH,
         target: RangeTarget::EnvelopeTrigger,
+    },
+    // The Master Key's Home position was retired (13 positions became 12).
+    RangeChange {
+        epoch: MASTER_KEY_CONCRETE_EPOCH,
+        target: RangeTarget::Control("master.key"),
     },
 ];
 

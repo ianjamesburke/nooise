@@ -29,6 +29,9 @@ pub(crate) struct PadEngine {
     pub(crate) active_character: usize,
     pub(crate) last_chord_notes: [i32; 4],
     last_chord_definition: ChordSlotControls,
+    /// How the last chord was re-read: a Master Mode or progression change
+    /// revoices the sounding chord even when its slot is unchanged.
+    last_mode_map: ModeMap,
     /// The pushed chord the last frame voiced, so landing and release each
     /// revoice even when the slot's authored definition is unchanged.
     last_held: Option<HeldChord>,
@@ -75,12 +78,13 @@ impl PadEngine {
             .fold(0.0, f32::max)
     }
 
-    /// `key` is `master.key` at construction. It must be passed in rather
-    /// than assumed neutral: the opening chord is voiced here and holds for a
-    /// whole `chord_bars` (~12 s at defaults, its release bleeding into the
-    /// next chord), so a session started from a song code with a chosen key
-    /// would play its first chord in its authored key while Bass, Tonal and
-    /// Arp — which resolve the key per note — are all in the chosen one.
+    /// `key` is the Master Key and Mode at construction. It must be passed
+    /// in rather than assumed to be the progression's own: the opening chord
+    /// is voiced here and holds for a whole `chord_bars` (~12 s at defaults,
+    /// its release bleeding into the next chord), so a session started from
+    /// a song code with a chosen key would play its first chord in its
+    /// authored key while Bass, Tonal and Arp — which resolve the key per
+    /// note — are all in the chosen one.
     #[cfg(test)]
     pub(crate) fn new(
         sample_rate: f32,
@@ -102,9 +106,10 @@ impl PadEngine {
         let tune = key.shift(cursor.window.progression) as f32;
         let active_character = wrapped_index(c.voice_type, PAD_TYPES.len());
         let last_chord_definition = *c.chord_slot(cursor.window.progression, cursor.slot());
+        let last_mode_map = key.mode_map(cursor.window.progression);
         let last_held = c.held_at(cursor.slot()).copied();
         let initial_notes = last_held.map_or_else(
-            || pad_chord_notes_with_slot(&last_chord_definition),
+            || last_mode_map.notes(&last_chord_definition),
             |held| held.notes,
         );
         let note_count = pad_note_count(c.chord_notes);
@@ -136,6 +141,7 @@ impl PadEngine {
             active_character,
             last_chord_notes: initial_notes,
             last_chord_definition,
+            last_mode_map,
             last_held,
             // The opening chord is heard too, from the first sample.
             onset: sounding.then_some(initial_notes),
@@ -359,6 +365,9 @@ impl PadEngine {
             self.published_span = Some(span);
         }
         let definition = *c.chord_slot(self.cursor.window.progression, self.cursor.slot());
+        let mode_map = key.mode_map(self.cursor.window.progression);
+        let mode_changed = mode_map != self.last_mode_map;
+        self.last_mode_map = mode_map;
         let held = c.held_at(self.cursor.slot()).copied();
         let held_changed = held != self.last_held;
         self.last_held = held;
@@ -416,10 +425,14 @@ impl PadEngine {
         } else {
             let chord_notes = if let Some(held) = held {
                 held.notes
-            } else if definition == self.last_chord_definition && self.sounding && !held_changed {
+            } else if definition == self.last_chord_definition
+                && self.sounding
+                && !held_changed
+                && !mode_changed
+            {
                 self.last_chord_notes
             } else {
-                pad_chord_notes_with_slot(&definition)
+                mode_map.notes(&definition)
             };
             let chord_edited = !self.sounding
                 || chord_notes != self.last_chord_notes
@@ -1009,29 +1022,11 @@ pub(crate) fn progression_tonic_pitch_class(progression: usize) -> i32 {
     })[progression.min(CUSTOM_PROGRESSION_INDEX)]
 }
 
-/// The key a progression sounds in under the Master Key: its authored home,
-/// or the chosen pitch class with the same mode. Written as a chord symbol
-/// for major and minor ("A", "Am") and by name for the other modes
-/// ("A Dorian"). `mode` is the Master Mode when one is chosen, which names
-/// the home pushes move in; `None` keeps the progression's own.
-pub(crate) fn progression_home_label(
-    progression: usize,
-    key: MasterKey,
-    mode: Option<HomeMode>,
-) -> String {
-    let (_, own, tonic) = progression_home(progression);
-    let mode = mode.unwrap_or(own);
-    let tonic = match key {
-        MasterKey::Home => tonic,
-        MasterKey::Pitch(_) => {
-            chord_pitch_name(progression_tonic_pitch_class(progression) + key.shift(progression))
-        }
-    };
-    match mode {
-        HomeMode::Major => tonic.to_string(),
-        HomeMode::Minor => format!("{tonic}m"),
-        _ => format!("{tonic} {}", mode.label()),
-    }
+/// A progression's own mode; Custom's home is A minor.
+pub(crate) fn progression_home_mode(progression: usize) -> HomeMode {
+    PROGRESSIONS
+        .get(progression)
+        .map_or(HomeMode::Minor, |built_in| built_in.home_mode)
 }
 
 /// Built-in progressions in dial order. With an 8 s release each chord rings
@@ -1761,22 +1756,15 @@ pub(crate) fn progression_key(progression: &Progression) -> &'static str {
     }
 }
 
-/// `pad.progression`'s label: key and mood for a built-in ("Am · Drift"),
-/// or "Custom". The key is the Master Key's when one is chosen ("Cm · Drift").
+/// `pad.progression`'s label: the key it plays in and its mood for a
+/// built-in ("Am · Drift"), or "Custom". Every progression plays in the
+/// Master Key, written as a chord symbol: minor for the modes with a minor
+/// tonic triad ("Gm · Mirage" in G Dorian).
 pub(crate) fn progression_label(progression: usize, key: MasterKey) -> String {
     match PROGRESSIONS.get(progression) {
         Some(built_in) => {
-            let authored = progression_key(built_in);
-            let key = match key {
-                MasterKey::Home => authored.to_string(),
-                MasterKey::Pitch(_) => format!(
-                    "{}{}",
-                    chord_pitch_name(
-                        progression_tonic_pitch_class(progression) + key.shift(progression)
-                    ),
-                    if authored.ends_with('m') { "m" } else { "" }
-                ),
-            };
+            let minor = key.mode.intervals()[2] == 3;
+            let key = format!("{}{}", key.pitch_name(), if minor { "m" } else { "" });
             format!("{key} · {}", built_in.mood)
         }
         None => "Custom".to_string(),
@@ -2069,29 +2057,40 @@ impl ProgressionFollower {
 }
 
 /// The shared chord-source entry point: the four notes at one table slot of
-/// a progression, built-in or Custom.
-pub(crate) fn pad_chord_tones(c: &PadControls, progression: usize, slot: usize) -> [i32; 4] {
+/// a progression, built-in or Custom, re-read in the Master Mode, or the
+/// pushed chord held there.
+pub(crate) fn pad_chord_tones(
+    c: &PadControls,
+    key: MasterKey,
+    progression: usize,
+    slot: usize,
+) -> [i32; 4] {
     match c.held_at(slot) {
         Some(held) => held.notes,
-        None => pad_chord_notes_with_slot(c.chord_slot(progression, slot)),
+        None => key
+            .mode_map(progression)
+            .notes(c.chord_slot(progression, slot)),
     }
 }
 
 /// The displayed identity follows the same resolved chord as every voice.
-/// Roman names read against the home: the progression's tonic, in the Master
-/// Mode when one is chosen, else the progression's own mode.
+/// Roman names read against the home: the Master Key and Mode.
 pub(crate) fn pad_chord_name(
     c: &PadControls,
     progression: usize,
     slot: usize,
     labels: ChordLabels,
 ) -> String {
-    let chord = c.chord_slot(progression, slot);
+    let cell = labels
+        .key
+        .mode_map(progression)
+        .cell(c.chord_slot(progression, slot));
     match labels.names {
-        ChordNames::Letters => custom_chord_name(chord, labels.key.shift(progression)),
-        ChordNames::Roman => {
-            let (tonic, own, _) = progression_home(progression);
-            roman_chord_name(chord, tonic, labels.mode.unwrap_or(own))
-        }
+        ChordNames::Letters => cell_chord_name(&cell, labels.key.shift(progression)),
+        ChordNames::Roman => cell_roman_name(
+            &cell,
+            progression_tonic_pitch_class(progression),
+            labels.key.mode,
+        ),
     }
 }

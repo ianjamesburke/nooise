@@ -804,7 +804,7 @@ impl FluidEngine {
             pad: PadEngine::new_with_live_state(
                 sample_rate,
                 &initial_pad,
-                MasterKey::from_control(snapshot.master.key),
+                MasterKey::from_controls(&snapshot.master),
                 publish_tonal_session_state.then(|| session.clone()),
                 Arc::clone(&telemetry),
             ),
@@ -969,7 +969,7 @@ impl FluidEngine {
     fn route_osc_input(&mut self, cmd: OscVoiceCommand) {
         let controls = &self.effective;
         // Played notes follow the key of the progression sounding now.
-        let tune = MasterKey::from_control(controls.master.key)
+        let tune = MasterKey::from_controls(&controls.master)
             .shift(self.pad.cursor.window.progression) as f32;
         match cmd {
             OscVoiceCommand::PadNoteOn(note) => {
@@ -1256,7 +1256,7 @@ impl StereoEngine for FluidEngine {
         let mute_gains = self.mute_gates.next();
         let now_seconds = self.current_sample as f64 / self.sample_rate as f64;
 
-        let key = MasterKey::from_control(self.effective.master.key);
+        let key = MasterKey::from_controls(&self.effective.master);
         let pad = self.module_fx.process(
             Tab::Chords,
             &self.effective.modules.pad,
@@ -1660,9 +1660,10 @@ impl FluidEngine {
             return;
         };
         let pad = &self.effective.pad;
+        let key = MasterKey::from_controls(&self.effective.master);
         let slot = self.pad.cursor.slot();
         let triad = pad.held_at(slot).map_or_else(
-            || authored_triad(pad, progression_index(pad.progression), slot),
+            || authored_triad(pad, key, progression_index(pad.progression), slot),
             |held| held.triad,
         );
         let event = HarmonyEvent {
@@ -3299,13 +3300,13 @@ mod push_tests {
         let held = session.load().push.held.unwrap();
         let pad = &engine.effective.pad;
         assert_eq!(
-            pad_chord_tones(pad, 0, 0),
+            pad_chord_tones(pad, MasterKey::of_progression(0), 0, 0),
             held.notes,
             "Arp and Lead read it"
         );
         // Slot 0 is Am11 rooted on A1; C sits a minor third above, and the
         // authored bass (A2) moves with it.
-        assert_eq!(bass_root_note(0, 0, pad), 48);
+        assert_eq!(bass_root_note(0, 0, pad, MasterKey::of_progression(0)), 48);
         // The progression would move to slot 1 at beat 16; the push holds.
         play_until_beat(&mut engine, 33.0);
         assert_eq!(engine.pad.cursor.slot(), 0);
@@ -3564,9 +3565,9 @@ mod push_tests {
         assert!(same(&landed, &looping), "{landed:?}");
     }
 
-    /// Mode sets the home pushes move in and nothing else: the sounding
-    /// pushed chord and the progression stay exactly as they were, and only
-    /// the next move reads the new mode.
+    /// Mid-push, a Mode change leaves the sounding pushed chord and the
+    /// authored progression data exactly as they were; only the next move
+    /// reads the new mode (the progression is re-read, never rewritten).
     #[test]
     fn mode_moves_later_pushes_but_never_the_sounding_chord_or_progression() {
         let (session, mut engine, mut effects) = engine();
@@ -3575,7 +3576,7 @@ mod push_tests {
         play_until_beat(&mut engine, 4.5);
         let before = session.load();
         let held = before.push.held.unwrap();
-        session.update(|s| s.controls.master.mode = 3.0); // Dorian
+        session.update(|s| s.controls.master.mode = 2.0); // Dorian
         play_until_beat(&mut engine, 7.5);
         let after = session.load();
         assert_eq!(after.push.held, Some(held));

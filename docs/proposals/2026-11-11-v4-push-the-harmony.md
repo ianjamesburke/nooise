@@ -96,8 +96,8 @@ leaders.
 - A chord is a `Triad`: a root pitch class and a quality (major, minor,
   diminished), in the progression's own coordinates before the Master Key
   shift.
-- The key is the progression's home (`progression_home`: tonic and one of the
-  five home modes). Custom uses its A-minor home.
+- The key is the Master Key and Mode (`HomeKey::of`), in the progression's
+  coordinates.
 - Steps take the next scale degree strictly below or above the root (so an
   off-scale root steps onto the scale) and the mode's own triad there; a 2 or
   3 step is that many single steps (test-enforced).
@@ -189,23 +189,42 @@ bar line, with their real timing, and start the first pass on that line.
   writes that lane instead of a separate one. The triad widens to the full
   `Harmony` (tensions, slash bass); nothing here needs replacing.
 
-## Master Mode
+## Master Key and Mode
 
-Key (the existing `master.key`) and Mode (`master.mode`: Home, Major, Minor,
-Dorian, Phrygian, Mixolydian) sit on the Master page. Decision for the
-re-spelling snags: Mode never rewrites anything. It sets the home pushes move
-in (`HomeKey::of_song`: the progression's tonic in the chosen mode; Home
-keeps the progression's own), so scale steps, step qualities and `a` follow
-it, while the progression's slots, a loop's chords (with their colour and
-borrowed tones) and the sounding chord are untouched; Custom is never
-clobbered. To hear a loop in a new mode, push it there and `G` it. Changing
-Key or Mode mid-push leaves the sounding pad chord alone; only later moves
-follow (Bass, Arp and Lead re-key per note under Master Key, as before).
-Mode is musical state, so it is a registry control saved in song codes
-(appended to `SONG_ID_TABLE`; default Home is omitted, so existing codes
-are unchanged) and morphs land it with the harmony. The palette has
-`/mode <name>` and `/key <pitch>`; black keys are labelled as flats with
-sharp aliases because palette search reads `#` as a word break.
+Ian (2026-11-11): derive and set the key and mode on the master; progressions
+are relative values over them; Home is neither a key nor a mode.
+
+- **Concrete.** `master.key` is C through B and `master.key_mode` one of
+  Major, Minor, Dorian, Phrygian, Mixolydian (`MasterKey { pitch, mode }`).
+  Launch (`FluidControls::derive_key`) and every song or state load derive
+  them from the progression's authored key, so nothing sounds different until
+  they move. Choosing another progression keeps them.
+- **Progressions are relative** (`voice/mode_map.rs`, `ModeMap`). The Key
+  transposes (`MasterKey::shift`, as before). The Mode re-reads each
+  *diatonic* chord, one with a major or minor third whose every note is in
+  the authored scale: root, third, fifth and seventh move to the new mode's
+  notes on the same degrees, so its quality follows; an upper extension (9th,
+  11th, 13th, 6th, add tones) keeps its interval while the new scale has the
+  note and is dropped otherwise, its voice taking the nearest free chord
+  tone. Sus, power and borrowed chords keep their notes (transposed only).
+  The Bass under a re-read chord moves by degree with it. Built-in data is
+  never modified; Custom and edited slots are re-read the same way.
+- **One home.** Pushes, `a`, Roman numerals, Lead/Arp/Bass Scale follow and
+  the `G` loop all read the Master Key and Mode (`HomeKey::of`).
+- **Mode change mid-play.** An authored chord re-voices at once through the
+  pad's Attack/Release (`PadEngine::last_mode_map`), like a chord edit. A
+  pushed chord or a loop keeps the notes it was given; only later moves read
+  the new mode.
+- **Song codes.** The key keeps its id and wire values (1..12 = C..B, so an old
+  chosen key means the same pitch; 0, the retired Home, is refused as
+  `UnknownValue`); its dial lost a position (`MASTER_KEY_CONCRETE_EPOCH`).
+  `master.mode`, whose values meant "pushes only", is retired
+  (`RetiredControl("master.mode")`); `master.key_mode` replaces it. Both are
+  written only when they differ from the progression's own and derived when
+  absent, so every built-in loads in its own mode (test-enforced).
+- The palette has `/mode <name>` and `/key <pitch>`; black keys are labelled
+  as flats with sharp aliases because palette search reads `#` as a word
+  break.
 
 ## What this build leaves out
 

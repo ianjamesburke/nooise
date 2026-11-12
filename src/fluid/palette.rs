@@ -149,7 +149,7 @@ impl PaletteEntry {
                 Operation::State(_) => "state bank".to_string(),
                 Operation::Harmony(_) => "harmony".to_string(),
                 Operation::HarmonyQuantize(_) => "where pushes land".to_string(),
-                Operation::SetMode(_) => "home pushes move in".to_string(),
+                Operation::SetMode(_) => "master mode".to_string(),
                 Operation::SetKey(_) => "master key".to_string(),
                 Operation::ClearSequence => "visible sequence".to_string(),
             },

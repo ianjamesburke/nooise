@@ -227,7 +227,7 @@ const STAGGER_STEP_BARS: f64 = 8.0;
 fn waits_for_harmony(spec_id: &str) -> bool {
     spec_id == "pad.progression"
         || spec_id == "master.key"
-        || spec_id == "master.mode"
+        || spec_id == "master.key_mode"
         || spec_id.starts_with("pad.chord")
         || spec_id.starts_with("pad.step")
 }
@@ -1087,7 +1087,7 @@ impl MorphWriter {
 #[cfg(test)]
 mod tests {
     use super::super::module::{module_kind_value, preset_slot};
-    use super::super::voice::{MasterKey, progression_index};
+    use super::super::voice::{HomeMode, MasterKey, progression_index};
     use super::*;
 
     /// Songs 5 and 6 once carried a +5 semitone Tune over Custom's A-minor home.
@@ -1097,8 +1097,8 @@ mod tests {
         let states = decode_auto_states();
         for song in [5, 6] {
             let controls = &states[song - 1].controls;
-            let key = MasterKey::from_control(controls.master.key);
-            assert_eq!(key, MasterKey::Pitch(2), "song {song}");
+            let key = MasterKey::from_controls(&controls.master);
+            assert_eq!(key, MasterKey::new(2, HomeMode::Minor), "song {song}");
             assert_eq!(
                 key.shift(progression_index(controls.pad.progression)),
                 5,

@@ -1633,12 +1633,13 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &layer_controls!(
             Entry::Round,
             |c| c.master.key,
             |c, v| c.master.key = v,
-            |c| MasterKey::from_control(c.master.key).label().to_string(),
+            |c| MasterKey::from_controls(&c.master).pitch_name().to_string(),
         )
         .search_name("master key transpose tune")
-        .reset_at(0.0),
+        .song_values(&MASTER_KEY_SONG_VALUES)
+        .reset_at(9.0),
         ControlSpec::new(
-            "master.mode",
+            "master.key_mode",
             "Mode",
             ControlKind::Discrete,
             0.0,
@@ -1649,8 +1650,8 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c, v| c.master.mode = v,
             |c| master_mode(c.master.mode).0.to_string(),
         )
-        .search_name("master mode scale harmony home")
-        .reset_at(0.0),
+        .search_name("master mode scale harmony")
+        .reset_at(1.0),
     ]
 );
 
@@ -1802,7 +1803,7 @@ pub(crate) const CHORDS_CONTROLS: &[ControlSpec] = &layer_controls!(chords pad, 
         |c, v| c.pad.progression = v,
         |c| progression_label(
             progression_index(c.pad.progression),
-            MasterKey::from_control(c.master.key)
+            MasterKey::from_controls(&c.master)
         ),
     )
     .song_values(&PROGRESSION_SONG_VALUES),
@@ -3781,8 +3782,7 @@ pub(crate) fn chords_tab_controls(
                         slot,
                         ChordLabels {
                             names: ChordNames::Letters,
-                            key: MasterKey::from_control(c.master.key),
-                            mode: master_mode(c.master.mode).1,
+                            key: MasterKey::from_controls(&c.master),
                         },
                     );
                 }

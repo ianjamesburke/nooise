@@ -72,19 +72,19 @@
 
 ## Music glossary
 
-- **Home key:** The progression's tonic and mode. Lead's Scale reads its seven
-  notes even when a sounding chord borrows a note outside them. Built-in
-  progressions declare a mode; Custom currently has an A-minor home.
-- **Master Key:** The one key every progression plays in, or Home, where each
-  keeps its authored key. Choosing a pitch keeps each progression's mode and
-  moves its tonic there, so a morph or progression change never leaves the key.
-  Letter names and the header follow it; Roman numerals do not.
-- **Master Mode:** Home (each progression's own mode) or Major, Minor,
-  Dorian, Phrygian or Mixolydian. It sets the **home** pushes move in: the
-  progression's tonic in that mode, which scale steps walk, step chords take
-  their quality from, and `a` returns to. It never rewrites a progression,
-  a loop or the sounding chord; to hear material in a new mode, push it
-  there and loop it. Saved in song codes.
+- **Authored key:** A progression's own tonic and mode. Built-in
+  progressions declare a mode; Custom has an A-minor home.
+- **Master Key / Master Mode:** The one concrete key (C through B) and mode
+  (Major, Minor, Dorian, Phrygian, Mixolydian) every progression plays in;
+  never "Home". Launch and loading a song derive both from the progression's
+  authored key, so nothing changes until the player does; choosing another
+  progression keeps them. A progression is read relative to them: the Key
+  transposes it, and the Mode re-reads each diatonic chord on its scale
+  degree (I-vi-IV-V in major becomes i-VI-iv-v in minor) while sus, power and
+  borrowed chords keep their notes. The authored data never changes. Together
+  they are the **home**: pushes move in it, `a` returns to its tonic chord,
+  Lead's Scale reads its seven notes, and Roman numerals read against it.
+  Saved in song codes only when changed.
 - **Chord names:** Roman numerals ("i7", the default) or letters ("Am7"), a
   display choice made from `/` that never changes sound or a song code. Roman
   reads each chord against the home: the progression's tonic in the Master

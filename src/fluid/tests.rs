@@ -32,6 +32,7 @@ fn chord_builder_audio_evidence() {
         let mut song = SongState::default();
         song.controls.pad.progression =
             PROGRESSIONS.iter().position(|p| p.mood == mood).unwrap() as f32;
+        song.controls.derive_key();
         song.controls.pad.attack_time = 0.5;
         song.controls.pad.release_time = 2.0;
         song.controls.tonal.level = 0.0;
@@ -149,7 +150,7 @@ fn pad_engine(controls: &PadControls) -> PadEngine {
     PadEngine::new(
         SAMPLE_RATE,
         controls,
-        MasterKey::Home,
+        HOME,
         Arc::new(FluidTelemetry::default()),
     )
 }
@@ -160,7 +161,7 @@ fn pad_engine(controls: &PadControls) -> PadEngine {
 fn advance_chords(pad: &mut PadEngine, controls: &PadControls, chords: u64) {
     for chord in 1..=chords {
         let sample = chord * SAMPLE_RATE as u64 * 2;
-        let _ = pad.next(controls, MasterKey::Home, timing(sample, 120.0));
+        let _ = pad.next(controls, HOME, timing(sample, 120.0));
     }
 }
 
@@ -336,40 +337,62 @@ fn pad_chord_converts_progression_a_first_chord() {
     assert_close(chord[3], 440.0 * 2f32.powf((60.0 - 69.0) / 12.0)); // C4
 }
 
+/// The Master Key and Mode for tests that play a progression as authored
+/// (Drift, and Custom, are in A minor).
+const HOME: MasterKey = MasterKey::new(9, HomeMode::Minor);
+
 #[test]
 fn master_key_moves_every_progression_to_the_chosen_pitch_class() {
     for progression in 0..=CUSTOM_PROGRESSION_INDEX {
         let tonic = progression_tonic_pitch_class(progression);
-        assert_eq!(MasterKey::Home.shift(progression), 0);
-        for pitch in 0..12u8 {
-            let shift = MasterKey::Pitch(pitch).shift(progression);
+        assert_eq!(MasterKey::of_progression(progression).shift(progression), 0);
+        for pitch in 0..12 {
+            let shift = MasterKey::new(pitch, HomeMode::Major).shift(progression);
             assert!(
                 (-6..=5).contains(&shift),
                 "{progression} to {pitch}: {shift}"
             );
-            assert_eq!((tonic + shift).rem_euclid(12), i32::from(pitch));
+            assert_eq!((tonic + shift).rem_euclid(12), pitch);
         }
     }
     // Am to C is up a minor third; Am to Ab is down a semitone.
-    assert_eq!(MasterKey::Pitch(0).shift(0), 3);
-    assert_eq!(MasterKey::Pitch(8).shift(0), -1);
+    assert_eq!(MasterKey::new(0, HomeMode::Minor).shift(0), 3);
+    assert_eq!(MasterKey::new(8, HomeMode::Minor).shift(0), -1);
 }
 
+/// Key and Mode are always concrete: C through B, and five modes. Nothing
+/// reads as a "Home" key or mode.
 #[test]
-fn master_key_dial_reads_home_then_c_through_b() {
-    let spec = spec_by_id("master.key").expect("the Key control is registered");
+fn master_key_and_mode_dials_name_concrete_values() {
+    let key = spec_by_id("master.key").expect("the Key control is registered");
+    let mode = spec_by_id("master.key_mode").expect("the Mode control is registered");
     let mut controls = FluidControls::default();
-    assert_eq!((spec.display)(&controls), "Home");
-    for (dial, label) in [(1.0, "C"), (4.0, "Eb"), (10.0, "A"), (12.0, "B")] {
-        (spec.set)(&mut controls, dial);
-        assert_eq!((spec.display)(&controls), label);
+    assert_eq!((key.display)(&controls), "A");
+    assert_eq!((mode.display)(&controls), "Minor");
+    for (dial, label) in [(0.0, "C"), (3.0, "Eb"), (9.0, "A"), (11.0, "B")] {
+        (key.set)(&mut controls, dial);
+        assert_eq!((key.display)(&controls), label);
     }
-    assert_eq!(MasterKey::from_control(12.0), MasterKey::Pitch(11));
-    assert_eq!(
-        MasterKey::from_control(99.0),
-        MasterKey::Pitch(11),
-        "clamped"
+    assert_eq!((key.min, key.max), (0.0, 11.0));
+    for (dial, label) in MASTER_MODES.iter().enumerate() {
+        (mode.set)(&mut controls, dial as f32);
+        assert_eq!((mode.display)(&controls), label.0);
+    }
+    assert!(
+        spec_by_id("master.mode").is_none(),
+        "the Home-capable Mode is retired"
     );
+}
+
+/// A default song is already derived: its Master Key and Mode are the
+/// default progression's own.
+#[test]
+fn default_controls_carry_the_default_progressions_key() {
+    let mut controls = FluidControls::default();
+    let before = (controls.master.key, controls.master.mode);
+    controls.derive_key();
+    assert_eq!((controls.master.key, controls.master.mode), before);
+    assert_eq!(MasterKey::from_controls(&controls.master), HOME);
 }
 
 /// The header, the progression row, and every letter chord name the key the
@@ -378,12 +401,11 @@ fn master_key_dial_reads_home_then_c_through_b() {
 fn master_key_renames_the_key_and_the_letter_chords() {
     let labels = ChordLabels {
         names: ChordNames::Letters,
-        key: MasterKey::Pitch(0),
-        mode: None,
+        key: MasterKey::new(0, HomeMode::Minor),
     };
-    assert_eq!(progression_home_label(0, labels.key, None), "Cm");
+    assert_eq!(labels.key.label(), "Cm");
     assert_eq!(progression_label(0, labels.key), "Cm · Drift");
-    assert_eq!(progression_home_label(0, MasterKey::Home, None), "Am");
+    assert_eq!(HOME.label(), "Am");
     let pad = PadControls::default();
     assert_eq!(pad_chord_name(&pad, 0, 0, labels), "Cm7add11");
     assert_eq!(
@@ -393,8 +415,7 @@ fn master_key_renames_the_key_and_the_letter_chords() {
     );
     let roman_in_c = ChordLabels {
         names: ChordNames::Roman,
-        key: MasterKey::Pitch(0),
-        mode: None,
+        key: MasterKey::new(0, HomeMode::Minor),
     };
     assert_eq!(
         pad_chord_name(&pad, 0, 0, roman_in_c),
@@ -549,7 +570,7 @@ fn tonal_random_hits_stay_in_home_scale_through_borrowed_chords() {
             tonal.next(
                 &controls,
                 &pad,
-                MasterKey::Home,
+                MasterKey::of_progression(progression),
                 timing(beat * 24_000, 120.0),
             );
             let hit = &telemetry.hits[MusicalHit::Tonal as usize];
@@ -569,9 +590,14 @@ fn tonal_random_hits_stay_in_home_scale_through_borrowed_chords() {
         };
         let (tonic, mode, _) = progression_home(progression);
         (0..CHORD_SLOT_COUNT).any(|slot| {
-            pad_chord_tones(&pad, progression, slot)
-                .iter()
-                .any(|note| !mode.intervals().contains(&(note - tonic).rem_euclid(12)))
+            pad_chord_tones(
+                &pad,
+                MasterKey::of_progression(progression),
+                progression,
+                slot,
+            )
+            .iter()
+            .any(|note| !mode.intervals().contains(&(note - tonic).rem_euclid(12)))
         })
     });
     assert!(
@@ -613,7 +639,13 @@ fn tonal_home_changes_with_the_sounding_pad_progression_at_its_boundary() {
     assert_eq!(engine.pad.cursor.window.progression, 0);
     assert_eq!(next_pitch(&mut engine), 2, "D stays in A minor mid-chord");
     assert_eq!(engine.pad.cursor.window.progression, 0);
-    assert_eq!(next_pitch(&mut engine), 11, "G degree becomes B in C major");
+    // Sunny is read in the Master Mode, still A minor: its seventh degree
+    // is Bb in its own (C) coordinates, which the Key shift carries to G.
+    assert_eq!(
+        next_pitch(&mut engine),
+        10,
+        "G degree becomes Bb in C minor"
+    );
     assert_eq!(engine.pad.cursor.window.progression, sunny);
 }
 
@@ -767,7 +799,7 @@ fn tonal_engine_triggers_all_non_sine_type_variants() {
         let _ = tonal.next(
             &controls,
             &PadControls::default(),
-            MasterKey::Home,
+            HOME,
             TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.0),
         );
 
@@ -861,7 +893,7 @@ fn tonal_offset_moves_the_phrase_window_without_delaying_triggers() {
     let _ = tonal.next(
         &controls,
         &pad,
-        MasterKey::Home,
+        HOME,
         TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.0),
     );
     assert_eq!(tonal.step_index, 1);
@@ -869,7 +901,7 @@ fn tonal_offset_moves_the_phrase_window_without_delaying_triggers() {
     let _ = tonal.next(
         &controls,
         &pad,
-        MasterKey::Home,
+        HOME,
         TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 1.0),
     );
     assert_eq!(tonal.step_index, 0);
@@ -877,7 +909,7 @@ fn tonal_offset_moves_the_phrase_window_without_delaying_triggers() {
     let _ = tonal.next(
         &controls,
         &pad,
-        MasterKey::Home,
+        HOME,
         TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 2.0),
     );
     assert_eq!(tonal.step_index, 1);
@@ -905,7 +937,7 @@ fn tonal_level_ducks_notes_that_are_already_sounding() {
         let (l, r) = tonal.next(
             &controls,
             &pad,
-            MasterKey::Home,
+            HOME,
             TimingContext::new(f64::from(SAMPLE_RATE), 120.0, beat),
         );
         if step > 2_000 {
@@ -925,7 +957,7 @@ fn tonal_level_ducks_notes_that_are_already_sounding() {
         let (l, r) = tonal.next(
             &controls,
             &pad,
-            MasterKey::Home,
+            HOME,
             TimingContext::new(f64::from(SAMPLE_RATE), 120.0, beat),
         );
         after = after.max((l * l + r * r).sqrt());
@@ -949,7 +981,7 @@ fn tonal_rate_controls_trigger_spacing_independent_of_cycle() {
     let _ = tonal.next(
         &controls,
         &pad,
-        MasterKey::Home,
+        HOME,
         TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.0),
     );
     assert_eq!(tonal.step_index, 0);
@@ -957,7 +989,7 @@ fn tonal_rate_controls_trigger_spacing_independent_of_cycle() {
     let _ = tonal.next(
         &controls,
         &pad,
-        MasterKey::Home,
+        HOME,
         TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 0.5),
     );
     assert_eq!(tonal.step_index, 0);
@@ -965,7 +997,7 @@ fn tonal_rate_controls_trigger_spacing_independent_of_cycle() {
     let _ = tonal.next(
         &controls,
         &pad,
-        MasterKey::Home,
+        HOME,
         TimingContext::new(f64::from(SAMPLE_RATE), 120.0, 1.0),
     );
     assert_eq!(tonal.step_index, 1);
@@ -1453,11 +1485,16 @@ fn built_in_nine_thirteen_lands_chord_bank_tempo_and_midi_on_one_sample() {
         };
         let pad = &destination.controls.pad;
         let first_slot = ChordWindow::requested(pad).offset;
-        let expected_notes = pad_chord_tones(pad, pad.progression as usize, first_slot);
+        let expected_notes = pad_chord_tones(
+            pad,
+            MasterKey::of_progression(pad.progression as usize),
+            pad.progression as usize,
+            first_slot,
+        );
         let expected_midi = pad_notes_with_count(
             expected_notes,
             pad_note_count(pad.chord_notes),
-            MasterKey::from_control(destination.controls.master.key).shift(pad.progression as usize)
+            MasterKey::from_controls(&destination.controls.master).shift(pad.progression as usize)
                 as f32,
         );
         assert_eq!(
@@ -2304,8 +2341,11 @@ fn osc_output_voices_the_initial_pad_at_zero_audio_level_and_releases_on_stop() 
     let mut controls = FluidControls::default();
     controls.pad.level = 0.0;
     // D is five semitones above Am's tonic.
-    controls.master.key = 3.0;
-    let expected = pad_notes(pad_chord_tones(&controls.pad, 0, 0), 5.0);
+    controls.master.key = 2.0;
+    let expected = pad_notes(
+        pad_chord_tones(&controls.pad, MasterKey::of_progression(0), 0, 0),
+        5.0,
+    );
     let session = live_session(controls, AutomationState::default());
     let (sink, receiver) = OscVoiceSink::test_channel();
     let mut engine = FluidEngine::new(
@@ -2388,23 +2428,23 @@ fn connected_pad_osc_input_owns_hold_audio_without_stopping_the_progression() {
     let mut keyboard = pad_engine(&controls);
     let timing = TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.0);
     for _ in 0..2400 {
-        normal.next(&controls, MasterKey::Home, timing);
-        keyboard.next(&controls, MasterKey::Home, timing);
+        normal.next(&controls, HOME, timing);
+        keyboard.next(&controls, HOME, timing);
     }
     keyboard.osc_note_on(60, &controls, 0.0);
     let mut keyboard_played_level = 0.0;
     for _ in 0..4800 {
-        normal.next(&controls, MasterKey::Home, timing);
-        keyboard_played_level += keyboard.next(&controls, MasterKey::Home, timing).0.abs();
+        normal.next(&controls, HOME, timing);
+        keyboard_played_level += keyboard.next(&controls, HOME, timing).0.abs();
     }
     keyboard.osc_note_off(60);
     for _ in 0..24_000 {
-        normal.next(&controls, MasterKey::Home, timing);
-        keyboard.next(&controls, MasterKey::Home, timing);
+        normal.next(&controls, HOME, timing);
+        keyboard.next(&controls, HOME, timing);
     }
     let mut keyboard_idle_level = 0.0;
     for _ in 0..4800 {
-        keyboard_idle_level += keyboard.next(&controls, MasterKey::Home, timing).0.abs();
+        keyboard_idle_level += keyboard.next(&controls, HOME, timing).0.abs();
     }
     assert!(keyboard_played_level > keyboard_idle_level * 100.0);
     assert_eq!(keyboard.cursor.slot(), normal.cursor.slot());
@@ -2464,10 +2504,14 @@ fn pad_chord_note_count_changes_audio_and_osc_voicing_live() {
     pad.set_osc(sink);
     pad.next(
         &controls,
-        MasterKey::Home,
+        HOME,
         TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.0),
     );
-    let two = pad_notes_with_count(pad_chord_tones(&controls, 0, 0), 2, 0.0);
+    let two = pad_notes_with_count(
+        pad_chord_tones(&controls, MasterKey::of_progression(0), 0, 0),
+        2,
+        0.0,
+    );
     assert_eq!(pad.layers.last().unwrap().tones.len(), 2);
     assert_eq!(
         receiver.try_iter().collect::<Vec<_>>(),
@@ -2477,10 +2521,14 @@ fn pad_chord_note_count_changes_audio_and_osc_voicing_live() {
     controls.chord_notes = 5.0;
     pad.next(
         &controls,
-        MasterKey::Home,
+        HOME,
         TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.01),
     );
-    let five = pad_notes_with_count(pad_chord_tones(&controls, 0, 0), 5, 0.0);
+    let five = pad_notes_with_count(
+        pad_chord_tones(&controls, MasterKey::of_progression(0), 0, 0),
+        5,
+        0.0,
+    );
     assert_eq!(pad.layers.last().unwrap().tones.len(), 5);
     assert_eq!(
         receiver.try_iter().collect::<Vec<_>>(),
@@ -2510,12 +2558,15 @@ fn arp_osc_plays_at_zero_audio_level_and_releases_at_its_gate() {
     let (sink, receiver) = OscVoiceSink::test_channel();
     let mut arp = ArpEngine::new(SAMPLE_RATE);
     arp.set_osc(sink);
-    let first_note = tuned_note(pad_chord_tones(&pad, 0, 0)[0], 5.0);
+    let first_note = tuned_note(
+        pad_chord_tones(&pad, MasterKey::of_progression(0), 0, 0)[0],
+        5.0,
+    );
     for beat in [0.0, 0.5, 1.0] {
         let audio = arp.next(
             &controls,
             &pad,
-            MasterKey::Pitch(2),
+            MasterKey::new(2, HomeMode::Minor),
             TimingContext::new(SAMPLE_RATE as f64, 120.0, beat),
         );
         assert_eq!(audio, (0.0, 0.0));
@@ -2544,12 +2595,15 @@ fn arp_osc_uses_the_swung_note_grid() {
         arp.next(
             &controls,
             &pad,
-            MasterKey::Home,
+            HOME,
             TimingContext::new(SAMPLE_RATE as f64, 120.0, beat),
         );
     }
     let before_offbeat = receiver.try_iter().collect::<Vec<_>>();
-    let expected_first = tuned_note(pad_chord_tones(&pad, 0, 0)[0], 0.0);
+    let expected_first = tuned_note(
+        pad_chord_tones(&pad, MasterKey::of_progression(0), 0, 0)[0],
+        0.0,
+    );
     assert!(before_offbeat.iter().any(|e| matches!(
         e,
         OscVoiceEvent::ArpNote { note, .. } if *note == expected_first
@@ -2557,7 +2611,7 @@ fn arp_osc_uses_the_swung_note_grid() {
     arp.next(
         &controls,
         &pad,
-        MasterKey::Home,
+        HOME,
         TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.75),
     );
     assert!(
@@ -2737,13 +2791,16 @@ fn lead_lane_osc_plays_at_zero_audio_level_and_releases_at_gate() {
             lead.next(
                 &controls,
                 &pad,
-                MasterKey::Home,
+                HOME,
                 TimingContext::new(100.0, 120.0, beat)
             ),
             (0.0, 0.0)
         );
     }
-    let first_note = tuned_note(pad_chord_tones(&pad, 0, 0)[0], 0.0);
+    let first_note = tuned_note(
+        pad_chord_tones(&pad, MasterKey::of_progression(0), 0, 0)[0],
+        0.0,
+    );
     let events: Vec<_> = receiver.try_iter().collect();
     assert!(events.iter().any(|e| matches!(
         e,
@@ -2767,12 +2824,7 @@ fn lead_play_key_osc_holds_until_release_even_at_zero_audio_level() {
         tone: 1,
         held: true,
     });
-    lead.next(
-        &controls,
-        &pad,
-        MasterKey::Home,
-        TimingContext::new(100.0, 120.0, 0.0),
-    );
+    lead.next(&controls, &pad, HOME, TimingContext::new(100.0, 120.0, 0.0));
     assert!(matches!(
         receiver.try_iter().collect::<Vec<_>>().as_slice(),
         [OscVoiceEvent::LeadNote { .. }]
@@ -2785,7 +2837,7 @@ fn lead_play_key_osc_holds_until_release_even_at_zero_audio_level() {
     lead.next(
         &controls,
         &pad,
-        MasterKey::Home,
+        HOME,
         TimingContext::new(100.0, 120.0, 0.02),
     );
     assert!(matches!(
@@ -2812,11 +2864,14 @@ fn pad_stabs_send_only_selected_steps_and_release_between_hits() {
     for beat in [0.0, 0.125, 0.25, 0.5, 0.75, 1.0] {
         pad.next(
             &controls,
-            MasterKey::Home,
+            HOME,
             TimingContext::new(SAMPLE_RATE as f64, 120.0, beat),
         );
     }
-    let notes = pad_notes(pad_chord_tones(&controls, 0, 0), 0.0);
+    let notes = pad_notes(
+        pad_chord_tones(&controls, MasterKey::of_progression(0), 0, 0),
+        0.0,
+    );
     let events: Vec<_> = receiver
         .try_iter()
         .filter(|event| matches!(event, OscVoiceEvent::PadChord(_) | OscVoiceEvent::PadOff))
@@ -2849,7 +2904,7 @@ fn pad_slur_voices_its_own_chord_until_a_rest_step_releases_it() {
     for beat in [0.0, 0.125, 0.25, 0.375] {
         pad.next(
             &controls,
-            MasterKey::Home,
+            HOME,
             TimingContext::new(SAMPLE_RATE as f64, 120.0, beat),
         );
     }
@@ -2860,13 +2915,19 @@ fn pad_slur_voices_its_own_chord_until_a_rest_step_releases_it() {
             .filter(|event| matches!(event, OscVoiceEvent::PadChord(_) | OscVoiceEvent::PadOff))
             .collect::<Vec<_>>(),
         [
-            OscVoiceEvent::PadChord(pad_notes(pad_chord_tones(&controls, 0, 0), 0.0)),
-            OscVoiceEvent::PadChord(pad_notes(pad_chord_tones(&controls, 0, 1), 0.0)),
+            OscVoiceEvent::PadChord(pad_notes(
+                pad_chord_tones(&controls, MasterKey::of_progression(0), 0, 0),
+                0.0
+            )),
+            OscVoiceEvent::PadChord(pad_notes(
+                pad_chord_tones(&controls, MasterKey::of_progression(0), 0, 1),
+                0.0
+            )),
         ]
     );
     pad.next(
         &controls,
-        MasterKey::Home,
+        HOME,
         TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.5),
     );
     assert_eq!(
@@ -2889,16 +2950,19 @@ fn pad_retriggers_on_an_adjacent_active_hit_with_identical_chord() {
     pad.set_osc(sink);
     pad.next(
         &controls,
-        MasterKey::Home,
+        HOME,
         TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.0),
     );
     receiver.try_iter().for_each(drop);
     pad.next(
         &controls,
-        MasterKey::Home,
+        HOME,
         TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.25),
     );
-    let notes = pad_notes(pad_chord_tones(&controls, 0, 0), 0.0);
+    let notes = pad_notes(
+        pad_chord_tones(&controls, MasterKey::of_progression(0), 0, 0),
+        0.0,
+    );
     assert_eq!(
         receiver.try_iter().collect::<Vec<_>>(),
         [OscVoiceEvent::PadChord(notes)]
@@ -2921,7 +2985,7 @@ fn pad_sub_bar_chord_bars_and_slur_offbeat_span() {
     // Step 0 at beat 0.0 is Rest: no chord emitted.
     pad.next(
         &controls,
-        MasterKey::Home,
+        HOME,
         TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.0),
     );
     assert!(
@@ -2933,7 +2997,7 @@ fn pad_sub_bar_chord_bars_and_slur_offbeat_span() {
     // changes the chord, it does not extend the previous one.
     pad.next(
         &controls,
-        MasterKey::Home,
+        HOME,
         TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.5),
     );
     assert!(
@@ -2972,14 +3036,14 @@ fn pad_chord_offset_rotates_the_step_lane_with_the_grid() {
     for beat in [0.0, 0.25] {
         pad.next(
             &controls,
-            MasterKey::Home,
+            HOME,
             TimingContext::new(SAMPLE_RATE as f64, 120.0, beat),
         );
     }
     assert!(!chord_fired(&receiver), "hit before the active slot");
     pad.next(
         &controls,
-        MasterKey::Home,
+        HOME,
         TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.5),
     );
     assert!(chord_fired(&receiver), "slot 5 lands at step 2");
@@ -2996,13 +3060,13 @@ fn pad_stop_releases_osc_while_chord_is_sounding() {
     pad.set_osc(sink);
     pad.next(
         &controls,
-        MasterKey::Home,
+        HOME,
         TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.0),
     );
     receiver.try_iter().for_each(drop);
     let mut stopped = TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.01);
     stopped.transport = Transport::Stopped;
-    pad.next(&controls, MasterKey::Home, stopped);
+    pad.next(&controls, HOME, stopped);
     assert_eq!(
         receiver.try_iter().collect::<Vec<_>>(),
         [OscVoiceEvent::PadOff]
@@ -3021,7 +3085,7 @@ fn pad_switching_from_rest_to_active_slot_voices_chord() {
     pad.set_osc(sink);
     pad.next(
         &controls,
-        MasterKey::Home,
+        HOME,
         TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.0),
     );
     receiver.try_iter().for_each(drop);
@@ -3029,10 +3093,13 @@ fn pad_switching_from_rest_to_active_slot_voices_chord() {
     controls.edit_chord_slot(0).gate = ChordSlotControls::GATE_SOUND;
     pad.next(
         &controls,
-        MasterKey::Home,
+        HOME,
         TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.01),
     );
-    let notes = pad_notes(pad_chord_tones(&controls, 0, 0), 0.0);
+    let notes = pad_notes(
+        pad_chord_tones(&controls, MasterKey::of_progression(0), 0, 0),
+        0.0,
+    );
     assert_eq!(
         receiver.try_iter().collect::<Vec<_>>(),
         [OscVoiceEvent::PadChord(notes)]
@@ -3058,7 +3125,7 @@ fn pad_stab_audio_dies_between_hits() {
         let beat = sample as f64 * 120.0 / (SAMPLE_RATE as f64 * 60.0);
         let (left, right) = pad.next(
             &controls,
-            MasterKey::Home,
+            HOME,
             TimingContext::new(SAMPLE_RATE as f64, 120.0, beat),
         );
         let power = f64::from(left * left + right * right);
@@ -3096,7 +3163,7 @@ fn pad_tie_length_changes_the_audible_stab() {
             let beat = sample as f64 * 120.0 / (SAMPLE_RATE as f64 * 60.0);
             let (left, right) = pad.next(
                 &controls,
-                MasterKey::Home,
+                HOME,
                 TimingContext::new(SAMPLE_RATE as f64, 120.0, beat),
             );
             if sample >= 9_000 {
@@ -3287,7 +3354,7 @@ fn pads_release_on_stop_and_revoice_on_start_between_chord_boundaries() {
     let mut clock = TempoClock::new(SAMPLE_RATE, 120.0);
     let mut run = |pad: &mut PadEngine, seconds: f32, transport: Transport| {
         let samples: Vec<(f32, f32)> = (0..(SAMPLE_RATE * seconds) as usize)
-            .map(|_| pad.next(&controls, MasterKey::Home, clock.tick(120.0, transport)))
+            .map(|_| pad.next(&controls, HOME, clock.tick(120.0, transport)))
             .collect();
         rms(&samples[samples.len() - samples.len() / 4..])
     };
@@ -4714,6 +4781,123 @@ fn song_code_skips_unknown_records() {
     assert_close(decoded.controls.master.key, 5.0);
 }
 
+/// A Mode change re-reads the authored chord sounding now: the pad re-voices
+/// it through the ordinary chord-change path, without waiting for the next
+/// chord. The progression's stored slots never change.
+#[test]
+fn a_mode_change_re_voices_the_sounding_authored_chord() {
+    let session = live_session(FluidControls::default(), AutomationState::default());
+    let mut engine = FluidEngine::new(
+        SAMPLE_RATE,
+        session.clone(),
+        no_morph(),
+        Arc::new(FluidTelemetry::default()),
+    );
+    engine.next_stereo();
+    let authored = PROGRESSIONS[0].chords[0].preset;
+    assert_eq!(
+        engine.pad.last_chord_notes,
+        Cell::from_slot(&authored).notes()
+    );
+    session.update(|s| s.controls.master.mode = 0.0); // Major
+    for _ in 0..2048 {
+        engine.next_stereo();
+    }
+    let major = MasterKey::new(9, HomeMode::Major)
+        .mode_map(0)
+        .notes(&authored);
+    assert_ne!(major, Cell::from_slot(&authored).notes());
+    assert_eq!(engine.pad.last_chord_notes, major);
+    assert_eq!(*session.load().controls.pad.chord_slot(0, 0), authored);
+}
+
+/// A code spells the Master Key and Mode only when they differ from the
+/// progression's own; a code without them is read in the progression's key.
+#[test]
+fn song_codes_carry_the_master_key_and_mode_only_when_changed() {
+    let harvest = PROGRESSIONS
+        .iter()
+        .position(|p| p.mood == "Harvest")
+        .unwrap();
+    let mut controls = FluidControls::default();
+    controls.pad.progression = harvest as f32;
+    controls.derive_key();
+    let derived = song::encode_song_code(&SongState::from_controls(controls.clone())).unwrap();
+    let decoded = song::decode_song_code(&derived).unwrap();
+    assert_eq!(
+        MasterKey::from_controls(&decoded.controls.master),
+        MasterKey::new(5, HomeMode::Major),
+        "Harvest is in F major"
+    );
+    // Choosing Harvest without deriving keeps the A-minor key: the code
+    // says so, and Harvest loads read in A minor.
+    let mut kept = FluidControls::default();
+    kept.pad.progression = harvest as f32;
+    let kept = song::encode_song_code(&SongState::from_controls(kept)).unwrap();
+    assert!(kept.len() > derived.len(), "only a changed key is spelled");
+    assert_eq!(
+        MasterKey::from_controls(&song::decode_song_code(&kept).unwrap().controls.master),
+        HOME
+    );
+    controls.master.key = 2.0;
+    controls.master.mode = 2.0;
+    let chosen = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
+    let decoded = song::decode_song_code(&chosen).unwrap();
+    assert_eq!(
+        MasterKey::from_controls(&decoded.controls.master),
+        MasterKey::new(2, HomeMode::Dorian)
+    );
+}
+
+/// The Home-capable Mode is retired by name; Home was never written for
+/// the Key, and a 0 there names no key.
+#[test]
+fn song_codes_refuse_a_home_key_and_the_retired_mode() {
+    let entry = |id: &str, value: i8| {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&1u16.to_le_bytes());
+        payload.extend_from_slice(&song_id_index(id).unwrap().to_le_bytes());
+        payload.push(song::VALUE_TAG_SMALL_INT);
+        payload.extend_from_slice(&value.to_le_bytes());
+        song::code_from_records(
+            song::CONTAINER_VERSION,
+            &[(song::SNAPSHOT_RECORD, &payload)],
+        )
+    };
+    assert_eq!(
+        song::decode_song_code(&entry("master.mode", 3)).err(),
+        Some(song::SongCodeError::RetiredControl("master.mode"))
+    );
+    assert_eq!(
+        song::decode_song_code(&entry("master.key", 0)).err(),
+        Some(song::SongCodeError::UnknownValue {
+            id: "master.key",
+            value: 0
+        })
+    );
+    // An old code's chosen key keeps its pitch: 3 was and is D.
+    let decoded = song::decode_song_code(&entry("master.key", 3)).unwrap();
+    assert_eq!(
+        MasterKey::from_controls(&decoded.controls.master).pitch(),
+        2
+    );
+}
+
+/// Every built-in song loads in its own progression's mode, so every chord
+/// and Bass note plays exactly as authored (`the_authored_mode_changes_nothing`).
+#[test]
+fn every_built_in_song_loads_in_its_progressions_own_mode() {
+    for (index, song) in decode_auto_states().iter().enumerate() {
+        let progression = progression_index(song.controls.pad.progression);
+        assert_eq!(
+            MasterKey::from_controls(&song.controls.master).mode,
+            MasterKey::of_progression(progression).mode,
+            "song {}",
+            index + 1
+        );
+    }
+}
+
 /// A container-v2 entry naming a `SONG_ID_TABLE` slot this build has no
 /// control for is skipped, and the tagged value keeps the reader aligned so
 /// the entries after it still land.
@@ -4740,7 +4924,8 @@ fn song_code_v2_skips_unknown_song_id_indexes_without_losing_alignment() {
 
     let decoded = song::decode_song_code(&code).unwrap();
 
-    assert_close(decoded.controls.master.key, 7.0);
+    // Key's song value 7 is F#, dial position 6 (`MASTER_KEY_SONG_VALUES`).
+    assert_close(decoded.controls.master.key, 6.0);
     assert_close(
         decoded.controls.master.level,
         FluidControls::default().master.level,
@@ -4975,9 +5160,18 @@ fn chords_tab_shows_progression_row_with_key_and_mood() {
         (CUSTOM_PROGRESSION_INDEX as f32, "Custom"),
     ] {
         controls.pad.progression = progression;
+        controls.derive_key();
         let rows = tab_controls(Tab::Chords, &controls);
         assert_eq!(rows[4].display, display, "pad.progression {progression}");
     }
+    // Choosing another progression keeps the Master Key it is read in.
+    controls.pad.progression = 0.0;
+    controls.derive_key();
+    controls.pad.progression = 5.0;
+    assert_eq!(
+        tab_controls(Tab::Chords, &controls)[4].display,
+        "Am · Drone"
+    );
 }
 
 #[test]
@@ -5294,12 +5488,12 @@ fn bass_rhythms_have_expected_hit_counts() {
 #[test]
 fn bass_root_note_follows_authored_bass_line() {
     let pad = PadControls::default();
-    assert_eq!(bass_root_note(0, 0, &pad), 45);
+    assert_eq!(bass_root_note(0, 0, &pad, MasterKey::of_progression(0)), 45);
     // Progression A's authored line diverges from the chord's lowest
     // tone at step 3 (B chord's min is 47) — proves the bass line is
     // independent data, not derived from PROGRESSIONS.
-    assert_eq!(bass_root_note(0, 3, &pad), 43);
-    assert_eq!(bass_root_note(2, 3, &pad), 43);
+    assert_eq!(bass_root_note(0, 3, &pad, MasterKey::of_progression(0)), 43);
+    assert_eq!(bass_root_note(2, 3, &pad, MasterKey::of_progression(2)), 43);
 }
 
 #[test]
@@ -5308,7 +5502,12 @@ fn bass_root_note_follows_custom_chord_slot_root_when_selected() {
     pad.chord_slots[3].degree = -1.0;
     pad.chord_slots[3].accidental = 1.0;
 
-    let root = bass_root_note(CUSTOM_PROGRESSION_INDEX, 3, &pad);
+    let root = bass_root_note(
+        CUSTOM_PROGRESSION_INDEX,
+        3,
+        &pad,
+        MasterKey::of_progression(CUSTOM_PROGRESSION_INDEX),
+    );
     assert_eq!(root, pad_chord_root_note(&pad.chord_slots[3]));
 }
 
@@ -5398,7 +5597,7 @@ fn run_bass_osc(
     let mut clock = TempoClock::new(SAMPLE_RATE, 120.0);
     for _ in 0..(SAMPLE_RATE * seconds) as usize {
         let timing = clock.tick(120.0, Transport::Playing);
-        bass.next(controls, &pad, MasterKey::Home, timing);
+        bass.next(controls, &pad, HOME, timing);
     }
     receiver.try_iter().collect()
 }
@@ -5413,7 +5612,8 @@ fn bass_osc_out_sends_each_hit_and_releases_it_after_the_decay() {
         interval_beats: 1.0,
         ..BassControls::default()
     };
-    let root = bass_root_note(0, 0, &PadControls::default()) + (controls.octave as i32) * 12;
+    let root = bass_root_note(0, 0, &PadControls::default(), MasterKey::of_progression(0))
+        + (controls.octave as i32) * 12;
     let sent = run_bass_osc(&mut bass, &controls, &receiver, 0.4);
     assert!(matches!(
         sent[0],
@@ -5452,7 +5652,7 @@ fn bass_engine_follows_pad_chord_root_across_advances() {
     // rhythm hit have occurred.
     for _ in 0..(sample_rate as usize) {
         let timing = clock.tick(120.0, Transport::Playing);
-        bass.next(&bass_controls, &pad, MasterKey::Home, timing);
+        bass.next(&bass_controls, &pad, HOME, timing);
     }
 
     assert_ne!(bass.progression.cursor.map(|cursor| cursor.step), Some(0));
@@ -5478,7 +5678,7 @@ fn bass_engine_is_monophonic_and_hard_cuts_on_retrigger() {
     // after the second one.
     for _ in 0..(sample_rate * 1.2) as usize {
         let timing = clock.tick(120.0, Transport::Playing);
-        bass.next(&bass_controls, &pad, MasterKey::Home, timing);
+        bass.next(&bass_controls, &pad, HOME, timing);
     }
 
     // Only one active voice remains: the previous hit's fade-out slot has
@@ -5831,7 +6031,7 @@ fn bass_pattern_returns_to_kick_phase_after_length_edit() {
         } else {
             16.0
         };
-        bass.next(&controls, &pad, MasterKey::Home, timing(sample, 120.0));
+        bass.next(&controls, &pad, HOME, timing(sample, 120.0));
         let level = match bass.voice.as_ref() {
             Some(BassVoice::Sub(voice)) => voice.core.envelope.level(),
             _ => 0.0,
@@ -6148,7 +6348,7 @@ fn pad_engine_caps_released_layers() {
 
     for chord in 1..12 {
         let sample = chord * SAMPLE_RATE as u64 * 2;
-        let _ = pad.next(&controls, MasterKey::Home, timing(sample, 120.0));
+        let _ = pad.next(&controls, HOME, timing(sample, 120.0));
         assert!(pad.layers.len() <= MAX_PAD_LAYERS);
     }
 }
@@ -6189,13 +6389,13 @@ fn pad_engine_progression_switch_waits_for_the_next_loop_boundary() {
     // otherwise the Adsr release completes in the same tick it starts and
     // `retain` prunes the layer before this test can observe the pushed one.
     for sample in 0..10 {
-        let _ = pad.next(&controls, MasterKey::Home, timing(sample, 120.0));
+        let _ = pad.next(&controls, HOME, timing(sample, 120.0));
     }
     let layers_before = pad.layers.len();
 
     // Flip progression with no further elapsed time / no chord-advance trigger.
     controls.progression = 1.0;
-    let _ = pad.next(&controls, MasterKey::Home, timing(10, 120.0));
+    let _ = pad.next(&controls, HOME, timing(10, 120.0));
 
     assert_eq!(pad.layers.len(), layers_before);
 }
@@ -6227,8 +6427,8 @@ fn pad_voices_its_opening_chord_in_the_master_key() {
             .collect::<Vec<_>>()
     };
 
-    let concert = render(MasterKey::Home);
-    let transposed = render(MasterKey::Pitch(2));
+    let concert = render(HOME);
+    let transposed = render(MasterKey::new(2, HomeMode::Minor));
     let difference = concert
         .iter()
         .zip(&transposed)
@@ -6250,12 +6450,12 @@ fn pad_engine_type_change_revoices_the_current_chord_immediately() {
     let mut pad = pad_engine(&controls);
 
     for sample in 0..10 {
-        let _ = pad.next(&controls, MasterKey::Home, timing(sample, 120.0));
+        let _ = pad.next(&controls, HOME, timing(sample, 120.0));
     }
     let layers_before = pad.layers.len();
 
     controls.voice_type = 3.0;
-    let _ = pad.next(&controls, MasterKey::Home, timing(10, 120.0));
+    let _ = pad.next(&controls, HOME, timing(10, 120.0));
 
     // The character must change on the tones already sounding, in place: a
     // new layer here would mean the chord re-attacked from silence.
@@ -6366,8 +6566,18 @@ fn custom_progression_pad_bass_and_arp_read_the_same_chord_source() {
     pad.chord_slots[2].accidental = -1.0;
     pad.chord_slots[2].extension = 1.0;
 
-    let tones = pad_chord_tones(&pad, CUSTOM_PROGRESSION_INDEX, 2);
-    let root = bass_root_note(CUSTOM_PROGRESSION_INDEX, 2, &pad);
+    let tones = pad_chord_tones(
+        &pad,
+        MasterKey::of_progression(CUSTOM_PROGRESSION_INDEX),
+        CUSTOM_PROGRESSION_INDEX,
+        2,
+    );
+    let root = bass_root_note(
+        CUSTOM_PROGRESSION_INDEX,
+        2,
+        &pad,
+        MasterKey::of_progression(CUSTOM_PROGRESSION_INDEX),
+    );
 
     // Bass's root matches the pad chord's own root voice, and both derive
     // from the same slot data via the shared chord-source path.
@@ -6416,7 +6626,7 @@ fn pad_engine_step_index_wraps_at_pad_chord_count_on_built_in_and_custom_progres
 
         for chord in 1..=5 {
             let sample = chord * SAMPLE_RATE as u64 * 2;
-            let _ = pad.next(&controls, MasterKey::Home, timing(sample, 120.0));
+            let _ = pad.next(&controls, HOME, timing(sample, 120.0));
             assert!(
                 pad.cursor.step < 2,
                 "progression {progression} ran past its chord count"
@@ -6440,7 +6650,7 @@ fn bass_engine_step_index_wraps_at_pad_chord_count_in_custom_mode() {
     for chord in 1..=5 {
         let sample = chord * sample_rate as u64 * 2;
         let timing = timing(sample, 120.0);
-        bass.next(&bass_controls, &pad, MasterKey::Home, timing);
+        bass.next(&bass_controls, &pad, HOME, timing);
         assert!(
             bass.progression
                 .cursor
@@ -6464,20 +6674,12 @@ fn pad_engine_chord_count_change_waits_for_the_chord_then_keeps_the_next_slot() 
 
     let layers_before = pad.layers.len();
     controls.chord_count = 2.0;
-    let _ = pad.next(
-        &controls,
-        MasterKey::Home,
-        timing(SAMPLE_RATE as u64 * 6, 120.0),
-    );
+    let _ = pad.next(&controls, HOME, timing(SAMPLE_RATE as u64 * 6, 120.0));
 
     assert_eq!(pad.cursor.step, 2);
     assert_eq!(pad.layers.len(), layers_before);
 
-    let _ = pad.next(
-        &controls,
-        MasterKey::Home,
-        timing(SAMPLE_RATE as u64 * 8, 120.0),
-    );
+    let _ = pad.next(&controls, HOME, timing(SAMPLE_RATE as u64 * 8, 120.0));
 
     assert_eq!(pad.cursor.step, 0);
     assert_eq!(pad.cursor.window.count, 2);
@@ -6572,21 +6774,13 @@ fn pad_engine_progression_change_waits_for_the_chord_then_restarts() {
 
     let layers_before = pad.layers.len();
     controls.progression = 1.0;
-    let _ = pad.next(
-        &controls,
-        MasterKey::Home,
-        timing(SAMPLE_RATE as u64 * 6, 120.0),
-    );
+    let _ = pad.next(&controls, HOME, timing(SAMPLE_RATE as u64 * 6, 120.0));
 
     assert_eq!(pad.cursor.step, 2);
     assert_eq!(pad.layers.len(), layers_before);
     assert_eq!(pad.cursor.window.progression, 0);
 
-    let _ = pad.next(
-        &controls,
-        MasterKey::Home,
-        timing(SAMPLE_RATE as u64 * 8, 120.0),
-    );
+    let _ = pad.next(&controls, HOME, timing(SAMPLE_RATE as u64 * 8, 120.0));
 
     assert_eq!(pad.cursor.step, 0);
     assert_eq!(pad.cursor.window.progression, 1);
@@ -6602,19 +6796,19 @@ fn vamp_quantizes_to_currently_playing_chord_without_retriggering_pad_voices() {
     let mut pad = pad_engine(&controls);
 
     // Initial frame at beat 0 starts chord 0.
-    let _ = pad.next(&controls, MasterKey::Home, timing(0, 120.0));
+    let _ = pad.next(&controls, HOME, timing(0, 120.0));
     assert_eq!(pad.cursor.slot(), 0);
     assert_eq!(pad.layers.len(), 1);
 
     // Advance to beat 4.0: chord 1 starts.
     let sample_beat_4 = (4.0 * 60.0 / 120.0 * f64::from(SAMPLE_RATE)) as u64;
-    let _ = pad.next(&controls, MasterKey::Home, timing(sample_beat_4, 120.0));
+    let _ = pad.next(&controls, HOME, timing(sample_beat_4, 120.0));
     assert_eq!(pad.cursor.slot(), 1);
     let layer_count_at_chord_1 = pad.layers.len();
 
     // Advance to mid-chord at beat 6.0 (halfway through chord 1, which runs 4.0..8.0).
     let sample_beat_6 = (6.0 * 60.0 / 120.0 * f64::from(SAMPLE_RATE)) as u64;
-    let _ = pad.next(&controls, MasterKey::Home, timing(sample_beat_6, 120.0));
+    let _ = pad.next(&controls, HOME, timing(sample_beat_6, 120.0));
     assert_eq!(pad.layers.len(), layer_count_at_chord_1);
 
     // Vamp is triggered mid-chord: locks chord 1 (slot 1) with chord_count: 1, chord_offset: 1.
@@ -6624,7 +6818,7 @@ fn vamp_quantizes_to_currently_playing_chord_without_retriggering_pad_voices() {
     let mut vamp_timing = timing(sample_beat_6 + 1, 120.0);
     vamp_timing.morph_phrase_start = Some(4.0);
 
-    let _ = pad.next(&controls, MasterKey::Home, vamp_timing);
+    let _ = pad.next(&controls, HOME, vamp_timing);
 
     // Crucial assertion: no new layer was pushed, sounding layers were not released!
     assert_eq!(pad.cursor.slot(), 1);
@@ -6634,7 +6828,7 @@ fn vamp_quantizes_to_currently_playing_chord_without_retriggering_pad_voices() {
     let sample_beat_8 = (8.0 * 60.0 / 120.0 * f64::from(SAMPLE_RATE)) as u64;
     let mut next_boundary_timing = timing(sample_beat_8, 120.0);
     next_boundary_timing.morph_phrase_start = Some(4.0);
-    let _ = pad.next(&controls, MasterKey::Home, next_boundary_timing);
+    let _ = pad.next(&controls, HOME, next_boundary_timing);
     assert_eq!(pad.cursor.slot(), 1);
 }
 
@@ -6685,11 +6879,7 @@ fn pad_engine_offset_change_restarts_the_phrase_at_the_next_chord() {
 
     let layers_before = pad.layers.len();
     controls.chord_offset = 4.0;
-    let _ = pad.next(
-        &controls,
-        MasterKey::Home,
-        timing(SAMPLE_RATE as u64 * 5, 120.0),
-    );
+    let _ = pad.next(&controls, HOME, timing(SAMPLE_RATE as u64 * 5, 120.0));
     assert_eq!(pad.cursor.slot(), 1);
     assert_eq!(pad.layers.len(), layers_before);
 
@@ -6697,7 +6887,7 @@ fn pad_engine_offset_change_restarts_the_phrase_at_the_next_chord() {
     for chord in 3..=5 {
         let _ = pad.next(
             &controls,
-            MasterKey::Home,
+            HOME,
             timing(chord * SAMPLE_RATE as u64 * 2, 120.0),
         );
         slots.push(pad.cursor.slot());
@@ -6842,7 +7032,7 @@ fn followers_stay_in_lockstep_with_the_pad_through_an_offset_window() {
     let mut follower = ProgressionFollower::new();
     for chord in 0..=9u64 {
         let timing = timing(chord * SAMPLE_RATE as u64 * 2, 120.0);
-        let _ = pad.next(&controls, MasterKey::Home, timing);
+        let _ = pad.next(&controls, HOME, timing);
         let (progression, slot) = follower.follow(&controls, timing);
         assert_eq!((progression, slot), (0, pad.cursor.slot()), "chord {chord}");
         assert!((4..8).contains(&slot));
@@ -6890,6 +7080,7 @@ fn every_gate_still_advances_the_harmony_and_the_authored_bass_walk() {
             progression,
             slot,
             &controls,
+            MasterKey::of_progression(progression),
         ));
     }
     assert_eq!(visited, (0..8).collect::<Vec<_>>());
@@ -7001,7 +7192,7 @@ fn built_in_chord_names_match_their_voicings() {
 #[test]
 fn progression_labels_pair_key_and_mood() {
     let labels: Vec<_> = (0..=CUSTOM_PROGRESSION_INDEX)
-        .map(|progression| progression_label(progression, MasterKey::Home))
+        .map(|progression| progression_label(progression, MasterKey::of_progression(progression)))
         .collect();
     assert_eq!(
         labels,
@@ -7094,15 +7285,15 @@ fn song_values_cover_every_dial_position() {
 #[test]
 fn custom_chord_names_read_the_slot_fields() {
     let slot = |degree: f32, accidental: f32, quality: f32, extension: f32, inversion: f32| {
-        custom_chord_name(
-            &ChordSlotControls {
+        cell_chord_name(
+            &Cell::from_slot(&ChordSlotControls {
                 degree,
                 accidental,
                 quality,
                 extension,
                 inversion,
                 ..ChordSlotControls::default()
-            },
+            }),
             0,
         )
     };
@@ -7110,7 +7301,7 @@ fn custom_chord_names_read_the_slot_fields() {
     let defaults = PadControls::default();
     let names: Vec<_> = defaults.chord_slots[..BUILTIN_PROGRESSION_CHORDS]
         .iter()
-        .map(|chord| custom_chord_name(chord, 0))
+        .map(|chord| cell_chord_name(&Cell::from_slot(chord), 0))
         .collect();
     assert_eq!(names, vec!["Am", "G", "Am", "Bdim", "Am", "G", "C", "Em"]);
     assert_eq!(slot(0.0, 0.0, 1.0, 0.0, 0.0), "A");
@@ -7125,8 +7316,7 @@ fn custom_chord_names_read_the_slot_fields() {
 fn roman() -> ChordLabels {
     ChordLabels {
         names: ChordNames::Roman,
-        key: MasterKey::Home,
-        mode: None,
+        key: HOME,
     }
 }
 
@@ -7142,15 +7332,15 @@ fn roman_chord_names_read_the_home_key() {
         "Custom's home is A minor"
     );
     let slot = |degree: f32, accidental: f32, quality: f32, extension: f32, inversion: f32| {
-        roman_chord_name(
-            &ChordSlotControls {
+        cell_roman_name(
+            &Cell::from_slot(&ChordSlotControls {
                 degree,
                 accidental,
                 quality,
                 extension,
                 inversion,
                 ..ChordSlotControls::default()
-            },
+            }),
             45,
             HomeMode::Minor,
         )
@@ -7245,12 +7435,12 @@ fn pad_engine_chord_slot_edit_retriggers_immediately() {
     let mut pad = pad_engine(&controls);
 
     for sample in 0..10 {
-        let _ = pad.next(&controls, MasterKey::Home, timing(sample, 120.0));
+        let _ = pad.next(&controls, HOME, timing(sample, 120.0));
     }
     let layers_before = pad.layers.len();
 
     controls.chord_slots[0].degree = 1.0;
-    let _ = pad.next(&controls, MasterKey::Home, timing(10, 120.0));
+    let _ = pad.next(&controls, HOME, timing(10, 120.0));
 
     assert!(
         pad.layers.len() > layers_before,
@@ -9387,10 +9577,10 @@ fn arp_engine_reseed_via_fluid_engine_reproduces_random_pattern() {
     let mut out_a = Vec::with_capacity(total as usize * 2);
     let mut out_b = Vec::with_capacity(total as usize * 2);
     for sample in 0..total {
-        let (l, r) = a.next(&controls, &pad, MasterKey::Home, timing(sample, 120.0));
+        let (l, r) = a.next(&controls, &pad, HOME, timing(sample, 120.0));
         out_a.push(l);
         out_a.push(r);
-        let (l, r) = b.next(&controls, &pad, MasterKey::Home, timing(sample, 120.0));
+        let (l, r) = b.next(&controls, &pad, HOME, timing(sample, 120.0));
         out_b.push(l);
         out_b.push(r);
     }
@@ -9415,7 +9605,7 @@ fn arp_chord_change_clamps_cycle_position_without_resetting_it() {
         ..ArpControls::default()
     };
 
-    arp.next(&narrow, &pad, MasterKey::Home, timing(0, 120.0));
+    arp.next(&narrow, &pad, HOME, timing(0, 120.0));
 
     // Clamped into range (index 3, the top of a 4-tone list) rather than
     // reset to 0, then advanced one step by the Up pattern: (3+1)%4 = 0.
@@ -9447,8 +9637,8 @@ fn arp_decay_sets_note_ring_independent_of_step() {
     };
     let long_controls = ArpControls { decay: 3.0, ..base };
 
-    short.next(&short_controls, &pad, MasterKey::Home, t0);
-    long.next(&long_controls, &pad, MasterKey::Home, t0);
+    short.next(&short_controls, &pad, HOME, t0);
+    long.next(&long_controls, &pad, HOME, t0);
     assert_eq!(short.voices.len(), 1);
     assert_eq!(long.voices.len(), 1);
 
@@ -10158,11 +10348,7 @@ fn lead_pattern_off_silences_the_lane_but_not_the_keys() {
     };
     let peak = |lead: &mut LeadEngine, c: &LeadControls, samples: u64| -> f32 {
         (0..samples)
-            .map(|sample| {
-                lead.next(c, &pad, MasterKey::Home, timing(sample, 120.0))
-                    .0
-                    .abs()
-            })
+            .map(|sample| lead.next(c, &pad, HOME, timing(sample, 120.0)).0.abs())
             .fold(0.0, f32::max)
     };
     let two_beats = SAMPLE_RATE as u64; // four lane steps at 120 BPM
@@ -10280,11 +10466,7 @@ fn lead_held_key_sustains_until_its_release_and_silences_the_lane() {
     };
     let peak = |lead: &mut LeadEngine, c: &LeadControls, from: u64, samples: u64| -> f32 {
         (from..from + samples)
-            .map(|sample| {
-                lead.next(c, &pad, MasterKey::Home, timing(sample, 120.0))
-                    .0
-                    .abs()
-            })
+            .map(|sample| lead.next(c, &pad, HOME, timing(sample, 120.0)).0.abs())
             .fold(0.0, f32::max)
     };
     let held = LeadPlayState {
@@ -10347,7 +10529,7 @@ fn lead_held_key_sustains_until_its_release_and_silences_the_lane() {
 #[test]
 fn lead_tones_reach_the_chord_an_octave_up_and_the_root_two_up() {
     let pad = PadControls::default();
-    let reach = lead_reach(LeadFollow::Chord, &pad, 0, 6); // C: 48 55 60 64
+    let reach = lead_reach(LeadFollow::Chord, &pad, MasterKey::of_progression(0), 0, 6); // C: 48 55 60 64
     assert_eq!(lead_step_tone(0.0), None, "value 0 is a rest");
     assert_eq!(lead_step_label(0.0, &reach), "Rest");
     assert_eq!(reach.note(lead_step_tone(1.0).unwrap(), 0.0), 48);
@@ -10370,7 +10552,7 @@ fn lead_tones_reach_the_chord_an_octave_up_and_the_root_two_up() {
 fn lead_scale_follow_walks_the_home_key_despite_borrowed_chords() {
     let pad = PadControls::default();
     // Progression A omits F from its chords, but Lead still gets all of A minor.
-    let scale = progression_scale(&pad, 0);
+    let scale = progression_scale(MasterKey::of_progression(0), 0);
     let notes: Vec<_> = (1..=scale.len())
         .map(|tone| scale.note(tone, 0.0))
         .collect();
@@ -10383,15 +10565,15 @@ fn lead_scale_follow_walks_the_home_key_despite_borrowed_chords() {
     assert_eq!(scale.label(8), "1'");
     // The scale ignores which chord is sounding: only the follow moves it.
     assert_eq!(
-        lead_reach(LeadFollow::Scale, &pad, 0, 3),
-        lead_reach(LeadFollow::Scale, &pad, 0, 6)
+        lead_reach(LeadFollow::Scale, &pad, MasterKey::of_progression(0), 0, 3),
+        lead_reach(LeadFollow::Scale, &pad, MasterKey::of_progression(0), 0, 6)
     );
     assert_ne!(
-        lead_reach(LeadFollow::Chord, &pad, 0, 3),
-        lead_reach(LeadFollow::Chord, &pad, 0, 6)
+        lead_reach(LeadFollow::Chord, &pad, MasterKey::of_progression(0), 0, 3),
+        lead_reach(LeadFollow::Chord, &pad, MasterKey::of_progression(0), 0, 6)
     );
     // Progression E borrows B natural; its home scale remains A Phrygian.
-    let phrygian = progression_scale(&pad, 4);
+    let phrygian = progression_scale(MasterKey::of_progression(4), 4);
     assert_eq!(
         (1..=phrygian.len())
             .map(|tone| phrygian.note(tone, 0.0))
@@ -10399,13 +10581,12 @@ fn lead_scale_follow_walks_the_home_key_despite_borrowed_chords() {
         [45, 46, 48, 50, 52, 53, 55]
     );
     // Custom stays in A minor when the selected window has only one triad.
-    let custom = PadControls {
-        progression: CUSTOM_PROGRESSION_INDEX as f32,
-        chord_count: 1.0,
-        ..PadControls::default()
-    };
     assert_eq!(
-        progression_scale(&custom, CUSTOM_PROGRESSION_INDEX).len(),
+        progression_scale(
+            MasterKey::of_progression(CUSTOM_PROGRESSION_INDEX),
+            CUSTOM_PROGRESSION_INDEX
+        )
+        .len(),
         7
     );
     assert_eq!(LeadFollow::from_value(1.0), LeadFollow::Scale);
@@ -10443,16 +10624,11 @@ fn lead_engine_is_mono_and_plays_the_lane_against_the_pad_chord() {
     let mut peak = 0.0f32;
     let mut silent = LeadEngine::new(SAMPLE_RATE);
     for sample in 0..SAMPLE_RATE as u64 * 4 {
-        let (l, r) = lead.next(&controls, &pad, MasterKey::Home, timing(sample, 120.0));
+        let (l, r) = lead.next(&controls, &pad, HOME, timing(sample, 120.0));
         assert_eq!(l, r, "the lead is centred");
         assert!(l.is_finite());
         peak = peak.max(l.abs());
-        let (sl, _) = silent.next(
-            &LeadControls::default(),
-            &pad,
-            MasterKey::Home,
-            timing(sample, 120.0),
-        );
+        let (sl, _) = silent.next(&LeadControls::default(), &pad, HOME, timing(sample, 120.0));
         assert_eq!(sl, 0.0, "a Level of 0 plays nothing");
     }
     assert!(peak > 0.05, "the lane never sounded: peak {peak}");
@@ -10517,7 +10693,7 @@ fn lead_engine_plays_a_pressed_tone_once_per_press_even_on_a_resting_lane() {
     let quiet_for = |lead: &mut LeadEngine, from: u64, samples: u64| -> f32 {
         (from..from + samples)
             .map(|sample| {
-                lead.next(&controls, &pad, MasterKey::Home, timing(sample, 120.0))
+                lead.next(&controls, &pad, HOME, timing(sample, 120.0))
                     .0
                     .abs()
             })
@@ -10564,7 +10740,7 @@ fn lead_engine_plays_a_pressed_tone_once_per_press_even_on_a_resting_lane() {
     });
     let muted = LeadControls::default();
     for sample in 0..64 {
-        silent.next(&muted, &pad, MasterKey::Home, timing(sample, 120.0));
+        silent.next(&muted, &pad, HOME, timing(sample, 120.0));
     }
     assert!(silent.voice.is_none());
     assert_eq!(quiet_for(&mut silent, 64, 4_000), 0.0);
@@ -10613,7 +10789,7 @@ fn lead_at_full_level_sits_under_the_bass() {
         ..LeadControls::default()
     };
     let l: Vec<f32> = (0..n)
-        .map(|s| lead.next(&lc, &pad, MasterKey::Home, timing(s, 120.0)).0)
+        .map(|s| lead.next(&lc, &pad, HOME, timing(s, 120.0)).0)
         .collect();
     let mut bass = BassEngine::new(SAMPLE_RATE);
     let bc = BassControls {
@@ -10622,7 +10798,7 @@ fn lead_at_full_level_sits_under_the_bass() {
         ..BassControls::default()
     };
     let b: Vec<f32> = (0..n)
-        .map(|s| bass.next(&bc, &pad, MasterKey::Home, timing(s, 120.0)).0)
+        .map(|s| bass.next(&bc, &pad, HOME, timing(s, 120.0)).0)
         .collect();
     let ratio = crate::synth::fm::rms(&l) / crate::synth::fm::rms(&b);
     assert!((0.45..0.9).contains(&ratio), "lead/bass rms ratio {ratio}");
@@ -11026,24 +11202,52 @@ fn editing_one_preset_slot_preserves_neighbors_custom_and_authored_bass() {
             controls.pad.progression = progression as f32;
             let custom = controls.pad.chord_slots;
             let before: Vec<_> = (0..CHORD_SLOT_COUNT)
-                .map(|s| pad_chord_tones(&controls.pad, progression, s))
+                .map(|s| {
+                    pad_chord_tones(
+                        &controls.pad,
+                        MasterKey::of_progression(progression),
+                        progression,
+                        s,
+                    )
+                })
                 .collect();
-            let bass = bass_root_note(progression, slot, &controls.pad);
+            let bass = bass_root_note(
+                progression,
+                slot,
+                &controls.pad,
+                MasterKey::of_progression(progression),
+            );
             let id = format!("pad.chord{}_extension", slot + 1);
             spec_by_id(&id).unwrap().apply_value(9.0, &mut controls);
             assert!(controls.pad.chord_is_edited(progression, slot));
-            assert_eq!(bass_root_note(progression, slot, &controls.pad), bass);
+            assert_eq!(
+                bass_root_note(
+                    progression,
+                    slot,
+                    &controls.pad,
+                    MasterKey::of_progression(progression)
+                ),
+                bass
+            );
             assert_eq!(controls.pad.chord_slots, custom);
             for (other, notes) in before.iter().enumerate() {
                 if other != slot {
-                    assert_eq!(pad_chord_tones(&controls.pad, progression, other), *notes);
+                    assert_eq!(
+                        pad_chord_tones(
+                            &controls.pad,
+                            MasterKey::of_progression(progression),
+                            progression,
+                            other
+                        ),
+                        *notes
+                    );
                 }
             }
             let next = (progression + 1) % PROGRESSIONS.len();
             controls.pad.progression = next as f32;
             assert!(!controls.pad.chord_is_edited(next, slot));
             assert_eq!(
-                pad_chord_tones(&controls.pad, next, slot),
+                pad_chord_tones(&controls.pad, MasterKey::of_progression(next), next, slot),
                 PROGRESSIONS[next].chords[slot % BUILTIN_PROGRESSION_CHORDS].notes()
             );
             controls.pad.progression = progression as f32;
@@ -11052,15 +11256,33 @@ fn editing_one_preset_slot_preserves_neighbors_custom_and_authored_bass() {
             let shift =
                 pad_chord_root_note(controls.pad.chord_slot(progression, slot)) - before_root;
             assert_eq!(
-                bass_root_note(progression, slot, &controls.pad),
+                bass_root_note(
+                    progression,
+                    slot,
+                    &controls.pad,
+                    MasterKey::of_progression(progression)
+                ),
                 bass + shift
             );
             assert!(controls.pad.restore_chord_slot(progression, slot));
             assert_eq!(
-                pad_chord_tones(&controls.pad, progression, slot),
+                pad_chord_tones(
+                    &controls.pad,
+                    MasterKey::of_progression(progression),
+                    progression,
+                    slot
+                ),
                 before[slot]
             );
-            assert_eq!(bass_root_note(progression, slot, &controls.pad), bass);
+            assert_eq!(
+                bass_root_note(
+                    progression,
+                    slot,
+                    &controls.pad,
+                    MasterKey::of_progression(progression)
+                ),
+                bass
+            );
         }
     }
 }
@@ -11107,7 +11329,7 @@ fn perfect_fifth_makes_b_minor_without_an_enharmonic_root_workaround() {
         ..ChordSlotControls::default()
     };
     assert_eq!(pad_chord_notes_with_slot(&chord), [47, 50, 54, 59]);
-    assert_eq!(custom_chord_name(&chord, 0), "Bm");
+    assert_eq!(cell_chord_name(&Cell::from_slot(&chord), 0), "Bm");
 }
 
 #[test]
@@ -11120,14 +11342,14 @@ fn a_sharp_eleventh_is_not_a_diminished_fifth_when_the_fifth_was_omitted() {
         ..ChordSlotControls::default()
     };
     assert_eq!(pad_chord_notes_with_slot(&chord), [41, 45, 52, 59]);
-    assert_eq!(custom_chord_name(&chord, 0), "Fmaj7add#11");
+    assert_eq!(cell_chord_name(&Cell::from_slot(&chord), 0), "Fmaj7add#11");
     assert_eq!(
-        custom_chord_name(
-            &ChordSlotControls {
+        cell_chord_name(
+            &Cell::from_slot(&ChordSlotControls {
                 degree: 2.0,
                 inversion: 1.0,
                 ..ChordSlotControls::default()
-            },
+            }),
             0
         ),
         "Cadd9/E"
@@ -11178,8 +11400,8 @@ fn progression_automation_resolves_slot_fields_in_the_selected_bank_without_auth
     );
     assert_eq!(replayed.pad.chord_overrides, effective.pad.chord_overrides);
     assert_eq!(
-        pad_chord_tones(&replayed.pad, 1, 0),
-        pad_chord_tones(&effective.pad, 1, 0)
+        pad_chord_tones(&replayed.pad, MasterKey::of_progression(1), 1, 0),
+        pad_chord_tones(&effective.pad, MasterKey::of_progression(1), 1, 0)
     );
 
     // Removing progression automation keeps its audible release in the plan.
@@ -11243,17 +11465,27 @@ fn pad_cached_chord_revoices_for_every_builder_field_and_restore() {
     ] {
         let mut controls = FluidControls::default();
         controls.pad.progression = CUSTOM_PROGRESSION_INDEX as f32;
-        let original = pad_chord_tones(&controls.pad, CUSTOM_PROGRESSION_INDEX, 0);
+        let original = pad_chord_tones(
+            &controls.pad,
+            MasterKey::of_progression(CUSTOM_PROGRESSION_INDEX),
+            CUSTOM_PROGRESSION_INDEX,
+            0,
+        );
         let mut engine = pad_engine(&controls.pad);
         spec_by_id(&format!("pad.chord1_{field}"))
             .unwrap()
             .apply_value(value, &mut controls);
-        let expected = pad_chord_tones(&controls.pad, CUSTOM_PROGRESSION_INDEX, 0);
+        let expected = pad_chord_tones(
+            &controls.pad,
+            MasterKey::of_progression(CUSTOM_PROGRESSION_INDEX),
+            CUSTOM_PROGRESSION_INDEX,
+            0,
+        );
         assert_ne!(expected, original, "fixture must change sound: {field}");
-        engine.next(&controls.pad, MasterKey::Home, timing(1, 120.0));
+        engine.next(&controls.pad, HOME, timing(1, 120.0));
         assert_eq!(engine.last_chord_notes, expected, "{field}");
         controls.pad.restore_chord_slot(CUSTOM_PROGRESSION_INDEX, 0);
-        engine.next(&controls.pad, MasterKey::Home, timing(2, 120.0));
+        engine.next(&controls.pad, HOME, timing(2, 120.0));
         assert_eq!(engine.last_chord_notes, original, "restoring {field}");
     }
 }
@@ -11459,7 +11691,7 @@ fn chord_slur_voices_without_reattacking_and_rest_releases_pads() {
     // Beat 0.0 (Step 1): strikes chord 0, spanning exactly its own interval.
     pad.next(
         &controls,
-        MasterKey::Home,
+        HOME,
         TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.0),
     );
     assert_eq!(pad.layers.len(), 1);
@@ -11470,7 +11702,10 @@ fn chord_slur_voices_without_reattacking_and_rest_releases_pads() {
             length_beats: 1.0,
         }
     );
-    let first_notes = pad_notes(pad_chord_tones(&controls, 0, 0), 0.0);
+    let first_notes = pad_notes(
+        pad_chord_tones(&controls, MasterKey::of_progression(0), 0, 0),
+        0.0,
+    );
     assert_eq!(
         receiver.try_iter().collect::<Vec<_>>(),
         [OscVoiceEvent::PadChord(first_notes)]
@@ -11480,7 +11715,7 @@ fn chord_slur_voices_without_reattacking_and_rest_releases_pads() {
     for _ in 0..4_800 {
         pad.next(
             &controls,
-            MasterKey::Home,
+            HOME,
             TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.5),
         );
     }
@@ -11492,7 +11727,7 @@ fn chord_slur_voices_without_reattacking_and_rest_releases_pads() {
     for (beat, step) in [(1.0, 1usize), (2.0, 2)] {
         pad.next(
             &controls,
-            MasterKey::Home,
+            HOME,
             TimingContext::new(SAMPLE_RATE as f64, 120.0, beat),
         );
         let entered = pad.layers.last().unwrap().tones[0].stack.envelope.level();
@@ -11500,7 +11735,10 @@ fn chord_slur_voices_without_reattacking_and_rest_releases_pads() {
             entered > 0.0,
             "slur at beat {beat} must not restart the swell from silence"
         );
-        let expected = pad_notes(pad_chord_tones(&controls, 0, step), 0.0);
+        let expected = pad_notes(
+            pad_chord_tones(&controls, MasterKey::of_progression(0), 0, step),
+            0.0,
+        );
         assert!(
             receiver
                 .try_iter()
@@ -11513,7 +11751,7 @@ fn chord_slur_voices_without_reattacking_and_rest_releases_pads() {
     // Beat 3.0 (Step 4, Rest): releases the pad and emits PadOff.
     pad.next(
         &controls,
-        MasterKey::Home,
+        HOME,
         TimingContext::new(SAMPLE_RATE as f64, 120.0, 3.0),
     );
     assert!(
@@ -11525,7 +11763,7 @@ fn chord_slur_voices_without_reattacking_and_rest_releases_pads() {
     for _ in 0..4_800 {
         pad.next(
             &controls,
-            MasterKey::Home,
+            HOME,
             TimingContext::new(SAMPLE_RATE as f64, 120.0, 3.1),
         );
     }
@@ -11577,7 +11815,7 @@ fn lead_and_tonal_tie_and_rest_steps_and_follow_modes() {
     lead.next(
         &lead_controls,
         &pad,
-        MasterKey::Home,
+        HOME,
         TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.0),
     );
     assert!(lead.voice.is_some());
@@ -11592,7 +11830,7 @@ fn lead_and_tonal_tie_and_rest_steps_and_follow_modes() {
     lead.next(
         &lead_controls,
         &pad,
-        MasterKey::Home,
+        HOME,
         TimingContext::new(SAMPLE_RATE as f64, 120.0, 0.5),
     );
     assert!(receiver.try_iter().next().is_none());
@@ -11620,8 +11858,8 @@ fn lead_and_tonal_tie_and_rest_steps_and_follow_modes() {
     let mut untied_engine = TonalEngine::new(SAMPLE_RATE);
     for sample in 0..(SAMPLE_RATE as u64 * 4 / 10) {
         let t = timing(sample, 120.0);
-        tied_engine.next(&tonal_tied, &pad, MasterKey::Home, t);
-        untied_engine.next(&tonal_untied, &pad, MasterKey::Home, t);
+        tied_engine.next(&tonal_tied, &pad, HOME, t);
+        untied_engine.next(&tonal_untied, &pad, HOME, t);
     }
     assert_eq!(
         tied_engine.voices.len(),
@@ -11634,10 +11872,25 @@ fn lead_and_tonal_tie_and_rest_steps_and_follow_modes() {
     );
 
     // Tonal Follow: Chord (0.0) vs Scale (1.0) resolves against chord tones vs home scale.
-    let chord_reach = lead_reach(LeadFollow::from_value(0.0), &pad, 0, 3);
-    let scale_reach = lead_reach(LeadFollow::from_value(1.0), &pad, 0, 3);
+    let chord_reach = lead_reach(
+        LeadFollow::from_value(0.0),
+        &pad,
+        MasterKey::of_progression(0),
+        0,
+        3,
+    );
+    let scale_reach = lead_reach(
+        LeadFollow::from_value(1.0),
+        &pad,
+        MasterKey::of_progression(0),
+        0,
+        3,
+    );
     assert_ne!(chord_reach, scale_reach);
-    assert_eq!(chord_reach.note(1, 0.0), pad_chord_tones(&pad, 0, 3)[0]);
+    assert_eq!(
+        chord_reach.note(1, 0.0),
+        pad_chord_tones(&pad, MasterKey::of_progression(0), 0, 3)[0]
+    );
     assert_eq!(scale_reach.note(1, 0.0), tonal_home_note(1, 0));
 }
 
@@ -12428,7 +12681,7 @@ fn bass_and_perc_evolve_mutates_live_steps_at_cycle_boundaries() {
 
     let pad = PadControls::default();
     let t0 = timing(0, 120.0);
-    bass.next(&session.load().controls.bass, &pad, MasterKey::Home, t0);
+    bass.next(&session.load().controls.bass, &pad, HOME, t0);
     perc.next(&session.load().controls.perc, t0);
     kick.next(&session.load().controls.kick, t0);
     clap.next(&session.load().controls.clap, t0);
@@ -12438,7 +12691,7 @@ fn bass_and_perc_evolve_mutates_live_steps_at_cycle_boundaries() {
     clap.next(&session.load().controls.clap, t1);
 
     let t2 = timing((SAMPLE_RATE * 2.0) as u64, 120.0);
-    bass.next(&session.load().controls.bass, &pad, MasterKey::Home, t2);
+    bass.next(&session.load().controls.bass, &pad, HOME, t2);
     perc.next(&session.load().controls.perc, t2);
     kick.next(&session.load().controls.kick, t2);
     clap.next(&session.load().controls.clap, t2);
@@ -12770,7 +13023,12 @@ fn custom_song_progressions_keep_their_chords_octaves_and_bass() {
                 .collect();
             println!(
                 "  slot {slot}: bass_root={} chord: {}",
-                bass_root_note(CUSTOM_PROGRESSION_INDEX, slot, &back.controls.pad),
+                bass_root_note(
+                    CUSTOM_PROGRESSION_INDEX,
+                    slot,
+                    &back.controls.pad,
+                    MasterKey::of_progression(CUSTOM_PROGRESSION_INDEX)
+                ),
                 names.join(" ")
             );
         }
@@ -12837,7 +13095,7 @@ fn sweet_dreams_holds_cm_for_a_bar_then_ab_and_g_for_half_each() {
     let mut current: Option<Vec<i32>> = None;
     for sample in 0..total {
         let beat = sample as f64 * bpm / (60.0 * rate);
-        let _ = engine.next(&pad, MasterKey::Home, TimingContext::new(rate, bpm, beat));
+        let _ = engine.next(&pad, HOME, TimingContext::new(rate, bpm, beat));
         for e in rx.try_iter() {
             if let OscVoiceEvent::PadChord(notes) = e {
                 let mut pcs: Vec<i32> = notes.notes[..notes.len]
@@ -12897,11 +13155,11 @@ fn sequencer_completion_lead_holds_through_the_entire_final_tie() {
     let mut engine = LeadEngine::new(SAMPLE_RATE);
     let pad = PadControls::default();
     for sample in 0..(SAMPLE_RATE as u64 * 7 / 10) {
-        engine.next(&controls, &pad, MasterKey::Home, timing(sample, 120.0));
+        engine.next(&controls, &pad, HOME, timing(sample, 120.0));
     }
     assert!(engine.voice.is_some(), "final Tie spans 0.5s through 0.75s");
     for sample in (SAMPLE_RATE as u64 * 7 / 10)..(SAMPLE_RATE as u64 * 9 / 10) {
-        engine.next(&controls, &pad, MasterKey::Home, timing(sample, 120.0));
+        engine.next(&controls, &pad, HOME, timing(sample, 120.0));
     }
     assert!(engine.voice.is_none(), "Rest releases the tied note");
 }
@@ -12924,7 +13182,7 @@ fn sequencer_completion_tonal_short_notes_survive_ties_for_every_character() {
         let pad = PadControls::default();
         let mut energy = 0.0;
         for sample in 0..(SAMPLE_RATE as u64 * 7 / 10) {
-            let (l, r) = engine.next(&controls, &pad, MasterKey::Home, timing(sample, 120.0));
+            let (l, r) = engine.next(&controls, &pad, HOME, timing(sample, 120.0));
             if sample > SAMPLE_RATE as u64 * 6 / 10 {
                 energy += l * l + r * r;
             }
@@ -12939,7 +13197,7 @@ fn sequencer_completion_tonal_short_notes_survive_ties_for_every_character() {
             "character {synth_type}: Tie must remain audible"
         );
         for sample in (SAMPLE_RATE as u64 * 7 / 10)..(SAMPLE_RATE as u64 * 9 / 10) {
-            engine.next(&controls, &pad, MasterKey::Home, timing(sample, 120.0));
+            engine.next(&controls, &pad, HOME, timing(sample, 120.0));
         }
         assert!(
             engine.voices.is_empty(),
@@ -13000,10 +13258,10 @@ fn sequencer_completion_chord_rests_suppress_followers_but_leave_scale_sequences
         };
         for sample in 0..100 {
             let t = timing(sample, 120.0);
-            lead.next(&lead_controls, &pad, MasterKey::Home, t);
-            tonal.next(&tonal_controls, &pad, MasterKey::Home, t);
-            bass.next(&bass_controls, &pad, MasterKey::Home, t);
-            arp.next(&arp_controls, &pad, MasterKey::Home, t);
+            lead.next(&lead_controls, &pad, HOME, t);
+            tonal.next(&tonal_controls, &pad, HOME, t);
+            bass.next(&bass_controls, &pad, HOME, t);
+            arp.next(&arp_controls, &pad, HOME, t);
         }
         let sounding = follow == 1.0;
         assert_eq!(lead.voice.is_some(), sounding, "Lead Follow {follow}");
@@ -13028,7 +13286,7 @@ fn sequencer_completion_tonal_hold_releases_on_stop_or_sequence_edit() {
         let pad = PadControls::default();
         let mut engine = TonalEngine::new(SAMPLE_RATE);
         for sample in 0..24_000 {
-            engine.next(&controls, &pad, MasterKey::Home, timing(sample, 120.0));
+            engine.next(&controls, &pad, HOME, timing(sample, 120.0));
         }
         assert!(!engine.voices.is_empty());
         if !stop {
@@ -13039,7 +13297,7 @@ fn sequencer_completion_tonal_hold_releases_on_stop_or_sequence_edit() {
             if stop {
                 t.transport = Transport::Stopped;
             }
-            engine.next(&controls, &pad, MasterKey::Home, t);
+            engine.next(&controls, &pad, HOME, t);
         }
         assert!(engine.voices.is_empty(), "stop={stop}: no stranded sustain");
     }
@@ -13059,13 +13317,13 @@ fn sequencer_completion_state_restore_releases_outgoing_tonal_tie() {
     let pad = PadControls::default();
     let mut engine = TonalEngine::new(SAMPLE_RATE);
     for sample in 0..12_000 {
-        engine.next(&controls, &pad, MasterKey::Home, timing(sample, 120.0));
+        engine.next(&controls, &pad, HOME, timing(sample, 120.0));
     }
     assert_eq!(engine.voices.len(), 1);
     controls.steps = [0.0; TONAL_STEP_COUNT];
     engine.restore_sequence(&TonalSequenceState::from_controls(&controls));
     for sample in 12_000..18_000 {
-        engine.next(&controls, &pad, MasterKey::Home, timing(sample, 120.0));
+        engine.next(&controls, &pad, HOME, timing(sample, 120.0));
     }
     assert!(
         engine.voices.is_empty(),
@@ -13094,8 +13352,8 @@ fn sequencer_completion_melodic_ties_hold_across_loop_wrap() {
     let mut tonal = TonalEngine::new(SAMPLE_RATE);
     for sample in 0..(SAMPLE_RATE as u64 * 12 / 10) {
         let t = timing(sample, 120.0);
-        lead.next(&controls.lead, &controls.pad, MasterKey::Home, t);
-        tonal.next(&controls.tonal, &controls.pad, MasterKey::Home, t);
+        lead.next(&controls.lead, &controls.pad, HOME, t);
+        tonal.next(&controls.tonal, &controls.pad, HOME, t);
         if sample == 100 {
             assert!(lead.voice.is_none(), "an initial Tie has no source");
             assert!(tonal.voices.is_empty());
@@ -13105,8 +13363,8 @@ fn sequencer_completion_melodic_ties_hold_across_loop_wrap() {
     assert_eq!(tonal.voices.len(), 1);
     for sample in (SAMPLE_RATE as u64 * 12 / 10)..(SAMPLE_RATE as u64 * 14 / 10) {
         let t = timing(sample, 120.0);
-        lead.next(&controls.lead, &controls.pad, MasterKey::Home, t);
-        tonal.next(&controls.tonal, &controls.pad, MasterKey::Home, t);
+        lead.next(&controls.lead, &controls.pad, HOME, t);
+        tonal.next(&controls.tonal, &controls.pad, HOME, t);
     }
     assert!(lead.voice.is_none());
     assert!(tonal.voices.is_empty());

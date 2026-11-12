@@ -25,14 +25,13 @@ pub(crate) enum Operation {
     State(StateAction),
     Harmony(HarmonyAction),
     HarmonyQuantize(PushQuantize),
-    /// Set `master.mode` to this `MASTER_MODES` row.
+    /// Set `master.key_mode` to this `MASTER_MODES` row.
     SetMode(u8),
-    /// Set `master.key`: 0 is Home, 1..=12 are C..B.
+    /// Set `master.key`: 0..=11 are C..B.
     SetKey(u8),
 }
 
 const MODE_LABELS: [&str; MASTER_MODES.len()] = [
-    "Mode home",
     "Mode major",
     "Mode minor",
     "Mode dorian",
@@ -41,12 +40,11 @@ const MODE_LABELS: [&str; MASTER_MODES.len()] = [
 ];
 /// Black keys are spelled as flats: palette search reads `#` as a word
 /// break, so `Key C#` would read as `Key C`. The sharp names are aliases.
-const KEY_LABELS: [&str; 13] = [
-    "Key home", "Key C", "Key Db", "Key D", "Key Eb", "Key E", "Key F", "Key Gb", "Key G",
-    "Key Ab", "Key A", "Key Bb", "Key B",
+const KEY_LABELS: [&str; 12] = [
+    "Key C", "Key Db", "Key D", "Key Eb", "Key E", "Key F", "Key Gb", "Key G", "Key Ab", "Key A",
+    "Key Bb", "Key B",
 ];
-const KEY_ALIASES: [&[&str]; 13] = [
-    &["key own", "home key"],
+const KEY_ALIASES: [&[&str]; 12] = [
     &[],
     &["key c sharp"],
     &[],
@@ -151,7 +149,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 90] = [
+    pub(crate) const ALL: [Self; 88] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -228,7 +226,6 @@ impl Operation {
         Self::SetMode(2),
         Self::SetMode(3),
         Self::SetMode(4),
-        Self::SetMode(5),
         Self::SetKey(0),
         Self::SetKey(1),
         Self::SetKey(2),
@@ -241,7 +238,6 @@ impl Operation {
         Self::SetKey(9),
         Self::SetKey(10),
         Self::SetKey(11),
-        Self::SetKey(12),
     ];
 
     pub(crate) fn spec(self) -> OperationSpec {
@@ -465,21 +461,13 @@ impl Operation {
                 operation: self,
                 label: MODE_LABELS[usize::from(index)],
                 aliases: &[],
-                description: if index == 0 {
-                    "pushes move in each progression's own mode"
-                } else {
-                    "the mode pushes move in; played chords keep their colour"
-                },
+                description: "re-read every progression in this mode; pushes move in it",
             },
             Self::SetKey(index) => OperationSpec {
                 operation: self,
                 label: KEY_LABELS[usize::from(index)],
                 aliases: KEY_ALIASES[usize::from(index)],
-                description: if index == 0 {
-                    "each progression plays in its own key"
-                } else {
-                    "the key every progression plays in"
-                },
+                description: "the key every progression plays in",
             },
             Self::ClearSequence => OperationSpec {
                 operation: self,
