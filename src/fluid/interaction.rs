@@ -1561,6 +1561,12 @@ pub(crate) enum InteractionEffect {
     ResetDownbeat,
     /// The swung off-beat Perc groove; see `EffectExecutor::chug`.
     Chug,
+    /// Kick on every beat; see `EffectExecutor::four_on_the_floor`.
+    FourOnTheFloor,
+    /// Kick and Clap at twice the rate; see `EffectExecutor::double_time`.
+    DoubleTime,
+    /// Kick and Clap at half the rate; see `EffectExecutor::half_time`.
+    HalfTime,
     RemoveAutomation,
     RandomizeAutomationRow,
     RandomizeSelected,
@@ -2676,6 +2682,9 @@ fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionE
         Operation::ToggleBeatRepeat => InteractionEffect::ToggleBeatRepeat,
         Operation::ResetDownbeat => InteractionEffect::ResetDownbeat,
         Operation::Chug => InteractionEffect::Chug,
+        Operation::FourOnTheFloor => InteractionEffect::FourOnTheFloor,
+        Operation::DoubleTime => InteractionEffect::DoubleTime,
+        Operation::HalfTime => InteractionEffect::HalfTime,
         Operation::State(action) => InteractionEffect::State(action),
         Operation::Harmony(action) => InteractionEffect::Harmony(action),
         Operation::HarmonyQuantize(quantize) => InteractionEffect::SetHarmonyQuantize(quantize),

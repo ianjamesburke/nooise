@@ -758,7 +758,9 @@ mod input_tests {
         assert_eq!(queued.index, via_palette.index);
         rig.land();
         let landed = rig.session.load();
-        assert_eq!(landed.vamp, Some(VampState::start(0.0, 3)));
+        let vamp = landed.vamp.expect("the vamp survives the landing");
+        assert_eq!((vamp.start_beat, vamp.slot), (0.0, 3));
+        assert_eq!(vamp.chord.map(|chord| chord.slot), Some(3), "captured");
         assert!(landed.vamp_press_seconds.is_some());
         assert!(!landed.vamp_latched);
         drop(landed);

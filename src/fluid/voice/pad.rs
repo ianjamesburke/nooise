@@ -2073,6 +2073,21 @@ pub(crate) fn pad_chord_tones(
     }
 }
 
+/// The name of a held chord (a vamp's) from its own notes, so extensions and
+/// voicing show and no later progression edit renames it.
+pub(crate) fn held_chord_name(held: &HeldChord, progression: usize, labels: ChordLabels) -> String {
+    let root = held.triad.root();
+    match labels.names {
+        ChordNames::Letters => notes_chord_name(root, held.notes, labels.key.shift(progression)),
+        ChordNames::Roman => notes_roman_name(
+            root,
+            held.notes,
+            progression_tonic_pitch_class(progression),
+            labels.key.mode,
+        ),
+    }
+}
+
 /// The displayed identity follows the same resolved chord as every voice.
 /// Roman names read against the home: the Master Key and Mode.
 pub(crate) fn pad_chord_name(

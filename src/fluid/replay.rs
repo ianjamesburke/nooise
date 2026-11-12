@@ -2672,6 +2672,68 @@ fn palette_added_effect_stays_on_its_page_instead_of_drilling_in() {
     );
 }
 
+/// `/four` and its aliases put a Kick on every beat and land on Kick Level.
+#[test]
+fn slash_four_and_its_aliases_set_the_kick_pulse() {
+    for query in ["four", "floor"] {
+        let mut events = vec![key(0, FixtureKey::Character('/'), InputPhase::Press)];
+        events.extend(
+            query
+                .chars()
+                .map(|c| key(0, FixtureKey::Character(c), InputPhase::Press)),
+        );
+        events.push(key(0, FixtureKey::Enter, InputPhase::Press));
+        let result = replay(&events, TerminalCapabilities::full());
+        assert_eq!(result.control("kick.interval_beats"), Some(0.25), "{query}");
+        assert_eq!(result.control("kick.level"), Some(0.5), "{query}");
+        assert_eq!(result.model.navigation.tab(), Tab::Kick, "{query}");
+    }
+}
+
+/// `/double` and its aliases run Kick and Clap at twice the rate.
+#[test]
+fn slash_double_and_its_aliases_set_kick_and_clap_rate() {
+    for query in ["double", "2x"] {
+        let mut events = vec![key(0, FixtureKey::Character('/'), InputPhase::Press)];
+        events.extend(
+            query
+                .chars()
+                .map(|c| key(0, FixtureKey::Character(c), InputPhase::Press)),
+        );
+        events.push(key(0, FixtureKey::Enter, InputPhase::Press));
+        let result = replay(&events, TerminalCapabilities::full());
+        assert_eq!(
+            result.control("kick.interval_beats"),
+            Some(0.125),
+            "{query}"
+        );
+        assert_eq!(
+            result.control("clap.interval_beats"),
+            Some(0.125),
+            "{query}"
+        );
+        assert_eq!(result.model.navigation.tab(), Tab::Kick, "{query}");
+    }
+}
+
+/// `/half` and its aliases run Kick and Clap at half the rate.
+#[test]
+fn slash_half_and_its_aliases_set_kick_and_clap_rate() {
+    for query in ["half", "halftime"] {
+        let mut events = vec![key(0, FixtureKey::Character('/'), InputPhase::Press)];
+        events.extend(
+            query
+                .chars()
+                .map(|c| key(0, FixtureKey::Character(c), InputPhase::Press)),
+        );
+        events.push(key(0, FixtureKey::Enter, InputPhase::Press));
+        let result = replay(&events, TerminalCapabilities::full());
+        assert_eq!(result.control("kick.interval_beats"), Some(0.5), "{query}");
+        assert_eq!(result.control("clap.interval_beats"), Some(0.5), "{query}");
+        assert_eq!(result.control("kick.level"), Some(0.0), "{query}");
+    }
+}
+
 /// `/chug`, `/yeehaw` and `/boogie` set the swung Perc groove from the hub
 /// and land on Perc Level.
 #[test]
@@ -2698,7 +2760,7 @@ fn slash_chug_and_its_aliases_set_the_perc_groove() {
             "{query}"
         );
         assert_eq!(result.control("perc.interval_beats"), Some(0.25), "{query}");
-        assert_eq!(result.control("perc.level"), Some(0.5), "{query}");
+        assert_eq!(result.control("perc.level"), Some(0.05), "{query}");
         assert_eq!(result.model.navigation.tab(), Tab::Perc, "{query}");
     }
 }

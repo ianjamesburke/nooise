@@ -20,6 +20,12 @@ pub(crate) enum Operation {
     ResetDownbeat,
     /// `/chug`: the swung off-beat Perc groove (`EffectExecutor::chug`).
     Chug,
+    /// `/four`: Kick on every beat (`EffectExecutor::four_on_the_floor`).
+    FourOnTheFloor,
+    /// `/double`: Kick and Clap at twice the rate (`EffectExecutor::double_time`).
+    DoubleTime,
+    /// `/half`: Kick and Clap at half the rate (`EffectExecutor::half_time`).
+    HalfTime,
     ChordNames(ChordNames),
     ClearSequence,
     State(StateAction),
@@ -153,7 +159,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 94] = [
+    pub(crate) const ALL: [Self; 97] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -182,6 +188,9 @@ impl Operation {
         Self::ToggleBeatRepeat,
         Self::ResetDownbeat,
         Self::Chug,
+        Self::FourOnTheFloor,
+        Self::DoubleTime,
+        Self::HalfTime,
         Self::ChordNames(ChordNames::Roman),
         Self::ChordNames(ChordNames::Letters),
         Self::ClearSequence,
@@ -357,6 +366,24 @@ impl Operation {
                 label: "Chug",
                 aliases: &["yeehaw", "boogie"],
                 description: "swung 16th Perc, 60% swing, level accents on the off-beat",
+            },
+            Self::FourOnTheFloor => OperationSpec {
+                operation: self,
+                label: "Four on the floor",
+                aliases: &["four", "4 on the floor", "four on the floor", "floor"],
+                description: "Kick on every beat",
+            },
+            Self::DoubleTime => OperationSpec {
+                operation: self,
+                label: "Double time",
+                aliases: &["double", "2x", "double time", "doubletime"],
+                description: "Kick and Clap at twice the rate",
+            },
+            Self::HalfTime => OperationSpec {
+                operation: self,
+                label: "Half time",
+                aliases: &["half", "0.5x", "half time", "halftime"],
+                description: "Kick and Clap at half the rate",
             },
             Self::ResetDownbeat => OperationSpec {
                 operation: self,
@@ -546,6 +573,9 @@ impl Operation {
             | Self::ToggleBeatRepeat
             | Self::ResetDownbeat
             | Self::Chug
+            | Self::FourOnTheFloor
+            | Self::DoubleTime
+            | Self::HalfTime
             | Self::ToggleAuto => None,
         }
     }

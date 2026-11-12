@@ -391,6 +391,16 @@ pub(crate) fn encode_song_code_at_epoch(
         payload.push(vamp.slot);
         payload.extend_from_slice(&vamp.start_beat.to_le_bytes());
         payload.extend_from_slice(&vamp.end_beat.to_le_bytes());
+        match vamp.chord {
+            Some(chord) => {
+                if chord.slot != vamp.slot {
+                    return Err(SongCodeError::InvalidPlannedAction);
+                }
+                payload.push(PUSH_CHORD);
+                write_held_chord(&mut payload, &chord)?;
+            }
+            None => payload.push(PUSH_NONE),
+        }
         write_record(VAMP_RECORD, &payload, &mut bytes)?;
     }
     if song.push.held.is_some() || song.push.queued.is_some() {
@@ -1533,22 +1543,60 @@ fn read_mute(bytes: &[u8], muted: &mut MuteState) -> Result<(), SongCodeError> {
 const PUSH_NONE: u8 = 0;
 const PUSH_CHORD: u8 = 1;
 
+/// A held chord's slot, triad and four voiced notes; shared by the push and
+/// vamp records.
+fn write_held_chord(out: &mut Vec<u8>, held: &HeldChord) -> Result<(), SongCodeError> {
+    if usize::from(held.slot) >= CHORD_SLOT_COUNT
+        || held.notes.iter().any(|note| !(0..=127).contains(note))
+    {
+        return Err(SongCodeError::InvalidPushHarmony);
+    }
+    out.extend_from_slice(&[held.slot, held.triad.root() as u8, held.triad.quality.tag()]);
+    out.extend(held.notes.map(|note| note as u8));
+    Ok(())
+}
+
+/// The inverse of `write_held_chord`, refusing a chord whose notes are not an
+/// ascending voicing of its own triad.
+fn read_held_chord(reader: &mut Reader) -> Result<HeldChord, SongCodeError> {
+    let invalid = |_| SongCodeError::InvalidPushHarmony;
+    let slot = reader.u8().map_err(invalid)?;
+    let triad = read_triad(reader)?;
+    let mut notes = [0; 4];
+    for note in &mut notes {
+        *note = i32::from(reader.u8().map_err(invalid)?);
+    }
+    let ascending = notes.windows(2).all(|pair| pair[0] < pair[1]);
+    let spells = triad
+        .pitch_classes()
+        .iter()
+        .all(|pc| notes.iter().any(|note| note.rem_euclid(12) == *pc))
+        && notes
+            .iter()
+            .all(|note| triad.pitch_classes().contains(&note.rem_euclid(12)));
+    if usize::from(slot) >= CHORD_SLOT_COUNT || notes[3] > 127 || !ascending || !spells {
+        return Err(SongCodeError::InvalidPushHarmony);
+    }
+    Ok(HeldChord { slot, triad, notes })
+}
+
+fn read_triad(reader: &mut Reader) -> Result<Triad, SongCodeError> {
+    let invalid = |_| SongCodeError::InvalidPushHarmony;
+    let root = reader.u8().map_err(invalid)?;
+    let quality = TriadQuality::from_tag(reader.u8().map_err(invalid)?)
+        .ok_or(SongCodeError::InvalidPushHarmony)?;
+    if root >= 12 {
+        return Err(SongCodeError::InvalidPushHarmony);
+    }
+    Ok(Triad::new(i32::from(root), quality))
+}
+
 fn write_push_harmony(push: &PushedHarmony) -> Result<Vec<u8>, SongCodeError> {
     let mut out = vec![PUSH_HARMONY_VERSION];
     match push.held {
         Some(held) => {
-            if usize::from(held.slot) >= CHORD_SLOT_COUNT
-                || held.notes.iter().any(|note| !(0..=127).contains(note))
-            {
-                return Err(SongCodeError::InvalidPushHarmony);
-            }
-            out.extend_from_slice(&[
-                PUSH_CHORD,
-                held.slot,
-                held.triad.root() as u8,
-                held.triad.quality.tag(),
-            ]);
-            out.extend(held.notes.map(|note| note as u8));
+            out.push(PUSH_CHORD);
+            write_held_chord(&mut out, &held)?;
         }
         None => out.push(PUSH_NONE),
     }
@@ -1620,42 +1668,14 @@ fn read_push_harmony(bytes: &[u8]) -> Result<PushedHarmony, SongCodeError> {
     if reader.u8().map_err(invalid)? != PUSH_HARMONY_VERSION {
         return Err(SongCodeError::InvalidPushHarmony);
     }
-    let triad = |reader: &mut Reader| -> Result<Triad, SongCodeError> {
-        let root = reader.u8().map_err(invalid)?;
-        let quality = TriadQuality::from_tag(reader.u8().map_err(invalid)?)
-            .ok_or(SongCodeError::InvalidPushHarmony)?;
-        if root >= 12 {
-            return Err(SongCodeError::InvalidPushHarmony);
-        }
-        Ok(Triad::new(i32::from(root), quality))
-    };
     let held = match reader.u8().map_err(invalid)? {
         PUSH_NONE => None,
-        PUSH_CHORD => {
-            let slot = reader.u8().map_err(invalid)?;
-            let triad = triad(&mut reader)?;
-            let mut notes = [0; 4];
-            for note in &mut notes {
-                *note = i32::from(reader.u8().map_err(invalid)?);
-            }
-            let ascending = notes.windows(2).all(|pair| pair[0] < pair[1]);
-            let spells = triad
-                .pitch_classes()
-                .iter()
-                .all(|pc| notes.iter().any(|note| note.rem_euclid(12) == *pc))
-                && notes
-                    .iter()
-                    .all(|note| triad.pitch_classes().contains(&note.rem_euclid(12)));
-            if usize::from(slot) >= CHORD_SLOT_COUNT || notes[3] > 127 || !ascending || !spells {
-                return Err(SongCodeError::InvalidPushHarmony);
-            }
-            Some(HeldChord { slot, triad, notes })
-        }
+        PUSH_CHORD => Some(read_held_chord(&mut reader)?),
         _ => return Err(SongCodeError::InvalidPushHarmony),
     };
     let queued = match reader.u8().map_err(invalid)? {
         PUSH_NONE => None,
-        PUSH_CHORD => Some(triad(&mut reader)?),
+        PUSH_CHORD => Some(read_triad(&mut reader)?),
         _ => return Err(SongCodeError::InvalidPushHarmony),
     };
     if !reader.is_empty() || (held.is_none() && queued.is_none()) {
@@ -1677,7 +1697,16 @@ fn read_vamp(bytes: &[u8]) -> Result<VampState, SongCodeError> {
         .map_err(|_| SongCodeError::InvalidPlannedAction)?;
     let valid_end = (end_beat.is_infinite() && end_beat.is_sign_positive())
         || (end_beat.is_finite() && end_beat >= 0.0 && end_beat > start_beat);
+    let chord = match reader
+        .u8()
+        .map_err(|_| SongCodeError::InvalidPlannedAction)?
+    {
+        PUSH_NONE => None,
+        PUSH_CHORD => Some(read_held_chord(&mut reader)?),
+        _ => return Err(SongCodeError::InvalidPlannedAction),
+    };
     if !reader.is_empty()
+        || chord.is_some_and(|chord| chord.slot != slot)
         || usize::from(slot) >= CHORD_SLOT_COUNT
         || !start_beat.is_finite()
         || !valid_end
@@ -1688,12 +1717,42 @@ fn read_vamp(bytes: &[u8]) -> Result<VampState, SongCodeError> {
         start_beat,
         end_beat,
         slot,
+        chord,
     })
 }
 
 #[cfg(test)]
 mod planned_action_codec_tests {
     use super::*;
+
+    /// A vamp saves the chord it holds, so a loaded song sounds it whatever
+    /// the progression says.
+    #[test]
+    fn a_vamp_roundtrips_its_held_chord() {
+        let mut song = SongState {
+            vamp: Some(VampState {
+                start_beat: 4.0,
+                end_beat: f64::INFINITY,
+                slot: 2,
+                chord: Some(HeldChord {
+                    slot: 2,
+                    triad: Triad::new(0, TriadQuality::Major),
+                    notes: [48, 52, 55, 60],
+                }),
+            }),
+            ..SongState::default()
+        };
+        let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+        assert_eq!(decoded.vamp, song.vamp);
+        song.vamp = song.vamp.map(|vamp| VampState {
+            chord: Some(HeldChord {
+                slot: 3,
+                ..vamp.chord.unwrap()
+            }),
+            ..vamp
+        });
+        assert!(encode_song_code(&song).is_err(), "chord slot must match");
+    }
 
     /// The fullest loop (32 changes over 8 bars) costs a few hundred
     /// characters, keeping a code short enough to paste.

@@ -266,7 +266,9 @@ struct EffectMessage {
 /// `/chug`'s Swing amount: 60% on the 50-75% drum-machine readout.
 const CHUG_SWING: f32 = 0.4;
 /// `/chug` raises a silent Perc Level to this so the groove is heard.
-const CHUG_SILENT_LEVEL: f32 = 0.5;
+const CHUG_SILENT_LEVEL: f32 = 0.05;
+/// `/four` raises a silent Kick Level to this so the pulse is heard.
+const FLOOR_SILENT_LEVEL: f32 = 0.5;
 /// `/chug`'s Level LFO: one beat, peak on the off-beat eighth, 25% depth.
 const CHUG_LFO_CYCLE_BEATS: f32 = 1.0;
 const CHUG_LFO_OFFSET_BEATS: f32 = 0.75;
@@ -1287,6 +1289,68 @@ impl EffectExecutor {
         Ok(selected)
     }
 
+    /// `/four`: Kick plays one hit per beat (the Steady preset at a
+    /// sixteenth grid, offset 0). A silent Level is raised so it is heard;
+    /// an audible Level is kept. Selects Kick Level.
+    pub(crate) fn four_on_the_floor(&mut self) -> Result<EffectAcknowledgement, EffectFailure> {
+        const LEVEL: &str = "kick.level";
+        self.edit_session(Some(LEVEL), |snapshot| {
+            let kick = &mut snapshot.controls.kick;
+            kick.apply_pattern_preset(0.0);
+            kick.interval_beats = 0.25;
+            kick.offset_beats = 0.0;
+            if kick.level <= f32::EPSILON {
+                kick.level = FLOOR_SILENT_LEVEL;
+            }
+        });
+        let index = spec_index(Tab::Kick, LEVEL).ok_or(EffectFailure::UnknownControl(LEVEL))?;
+        let selected = self.execute(LiveEffect::SelectControl {
+            tab: Tab::Kick,
+            index,
+            id: LEVEL,
+        })?;
+        self.show_message("Four on the floor: Kick on every beat".to_string());
+        Ok(selected)
+    }
+
+    /// `/double`: Kick and Clap at twice the rate of `/four`; see `kick_clap_rate`.
+    pub(crate) fn double_time(&mut self) -> Result<EffectAcknowledgement, EffectFailure> {
+        self.kick_clap_rate(0.125, "Double time: Kick and Clap at 2x")
+    }
+
+    /// `/half`: Kick and Clap at half the rate of `/four`; see `kick_clap_rate`.
+    pub(crate) fn half_time(&mut self) -> Result<EffectAcknowledgement, EffectFailure> {
+        self.kick_clap_rate(0.5, "Half time: Kick and Clap at half rate")
+    }
+
+    /// Kick and Clap both get Pattern Steady, Offset 0 and the given
+    /// interval in one edit. Levels are never touched. Selects Kick Level.
+    fn kick_clap_rate(
+        &mut self,
+        interval_beats: f32,
+        message: &str,
+    ) -> Result<EffectAcknowledgement, EffectFailure> {
+        const LEVEL: &str = "kick.level";
+        self.edit_session(Some(LEVEL), |snapshot| {
+            let kick = &mut snapshot.controls.kick;
+            kick.apply_pattern_preset(0.0);
+            kick.interval_beats = interval_beats;
+            kick.offset_beats = 0.0;
+            let clap = &mut snapshot.controls.clap;
+            clap.apply_pattern_preset(0.0);
+            clap.interval_beats = interval_beats;
+            clap.offset_beats = 0.0;
+        });
+        let index = spec_index(Tab::Kick, LEVEL).ok_or(EffectFailure::UnknownControl(LEVEL))?;
+        let selected = self.execute(LiveEffect::SelectControl {
+            tab: Tab::Kick,
+            index,
+            id: LEVEL,
+        })?;
+        self.show_message(message.to_string());
+        Ok(selected)
+    }
+
     /// Mute is a session overlay, so automation and auto morph keep driving
     /// the authored level while the engine gates the final layer output.
     pub(crate) fn toggle_mute(&mut self, tab: Tab) {
@@ -1778,6 +1842,9 @@ impl EffectExecutor {
                 ModulePlacement::Slapback,
             ),
             InteractionEffect::Chug => self.chug(),
+            InteractionEffect::FourOnTheFloor => self.four_on_the_floor(),
+            InteractionEffect::DoubleTime => self.double_time(),
+            InteractionEffect::HalfTime => self.half_time(),
             InteractionEffect::PlaceFilterCutoff { tab } => self.place_module(
                 tab,
                 module_catalog_index(interaction::FILTER_MODULE_ID),
@@ -2696,6 +2763,18 @@ impl EffectExecutor {
             InteractionEffect::Chug => {
                 self.edit_navigation_automation(AutomationState::close_editor);
                 self.chug()
+            }
+            InteractionEffect::FourOnTheFloor => {
+                self.edit_navigation_automation(AutomationState::close_editor);
+                self.four_on_the_floor()
+            }
+            InteractionEffect::DoubleTime => {
+                self.edit_navigation_automation(AutomationState::close_editor);
+                self.double_time()
+            }
+            InteractionEffect::HalfTime => {
+                self.edit_navigation_automation(AutomationState::close_editor);
+                self.half_time()
             }
             InteractionEffect::PlaceFilterCutoff { tab } => {
                 self.edit_navigation_automation(AutomationState::close_editor);
@@ -3645,6 +3724,68 @@ mod tests {
             ack,
             EffectAcknowledgement::ControlSelected { tab: Tab::Bass, .. }
         ));
+    }
+
+    #[test]
+    fn four_on_the_floor_puts_a_kick_on_every_beat_in_one_edit() {
+        let mut executor = executor_with(FluidControls::default());
+        let before = executor.session().load();
+        assert_eq!(before.controls.kick.level, 0.0, "fresh Kick is silent");
+        let ack = executor
+            .execute_interaction(
+                InteractionEffect::FourOnTheFloor,
+                &InteractionExecutionContext::default(),
+            )
+            .unwrap();
+        assert!(matches!(
+            ack,
+            EffectAcknowledgement::ControlSelected {
+                tab: Tab::Kick,
+                id: "kick.level",
+                ..
+            }
+        ));
+        let snapshot = executor.session().load();
+        assert_eq!(
+            snapshot.generation,
+            before.generation + 1,
+            "one publication"
+        );
+        let kick = &snapshot.controls.kick;
+        assert_eq!(kick.steps, DEFAULT_KICK_STEPS, "Steady: a hit on each beat");
+        assert_eq!((kick.interval_beats, kick.offset_beats), (0.25, 0.0));
+        assert_eq!(kick.level, FLOOR_SILENT_LEVEL);
+    }
+
+    #[test]
+    fn double_time_runs_kick_and_clap_at_twice_the_rate_in_one_edit() {
+        let mut executor = executor_with(FluidControls::default());
+        let before = executor.session().load();
+        let ack = executor
+            .execute_interaction(
+                InteractionEffect::DoubleTime,
+                &InteractionExecutionContext::default(),
+            )
+            .unwrap();
+        assert!(matches!(
+            ack,
+            EffectAcknowledgement::ControlSelected {
+                tab: Tab::Kick,
+                id: "kick.level",
+                ..
+            }
+        ));
+        let snapshot = executor.session().load();
+        assert_eq!(snapshot.generation, before.generation + 1);
+        let c = &snapshot.controls;
+        assert_eq!(
+            (c.kick.interval_beats, c.clap.interval_beats),
+            (0.125, 0.125)
+        );
+        assert_eq!(
+            (c.kick.level, c.clap.level),
+            (before.controls.kick.level, before.controls.clap.level)
+        );
     }
 
     #[test]

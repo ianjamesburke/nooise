@@ -425,6 +425,39 @@ fn default_controls_carry_the_default_progressions_key() {
     assert_eq!(MasterKey::from_controls(&controls.master), HOME);
 }
 
+/// A vamp names the chord it holds from the notes it captured, and that name
+/// is the one the progression gives the same chord, extensions, inversion and
+/// slash bass included, in Letters and in Roman, under the progression's own
+/// key and a changed one.
+#[test]
+fn a_held_chord_is_named_as_the_progression_names_it() {
+    for progression in 0..PROGRESSIONS.len() {
+        for key in [
+            MasterKey::of_progression(progression),
+            MasterKey::new(5, HomeMode::Major),
+        ] {
+            for names in [ChordNames::Letters, ChordNames::Roman] {
+                let labels = ChordLabels { names, key };
+                let pad = PadControls::default();
+                for slot in 0..BUILTIN_PROGRESSION_CHORDS {
+                    let map = key.mode_map(progression);
+                    let cell = map.cell(pad.chord_slot(progression, slot));
+                    let held = HeldChord {
+                        slot: slot as u8,
+                        triad: authored_triad(&pad, key, progression, slot),
+                        notes: cell.notes(),
+                    };
+                    assert_eq!(
+                        held_chord_name(&held, progression, labels),
+                        pad_chord_name(&pad, progression, slot, labels),
+                        "progression {progression} slot {slot} {names:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// The header, the progression row, and every letter chord name the key the
 /// song sounds in, so the screen never says Am while a Cm is playing.
 #[test]

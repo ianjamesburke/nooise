@@ -374,7 +374,15 @@ impl HarmonyView {
         let authored = authored_triad(pad, labels.key, progression, active_slot);
         let push = &session.push;
         let base = push.base(authored, beat, session.vamp);
-        let sounding = push.sounding(beat, session.vamp);
+        // A vamp's captured chord is the vamp's own, not a push: the header
+        // names it from its notes (`ui::draw_harmony`) and shows no PUSH.
+        let sounding = push.sounding(
+            beat,
+            session.vamp.map(|vamp| VampState {
+                chord: None,
+                ..vamp
+            }),
+        );
         Self {
             sounding: sounding.map_or_else(
                 || pad_chord_name(pad, progression, active_slot, labels),
@@ -1601,6 +1609,36 @@ mod tests {
         {
             assert!(frame.contains(expected), "missing {expected}: {frame}");
         }
+    }
+
+    /// A vamp reads as a vamp: the chord it holds is named from its own notes
+    /// (extensions included), whatever the progression now says, and it is
+    /// never mistaken for a push.
+    #[test]
+    fn a_vamped_chord_shows_its_extensions_and_vamp_not_push() {
+        let interaction = InteractionModel::default();
+        let mut session = session();
+        session.controls.pad.progression = 0.0;
+        let labels = session.chord_labels();
+        let key = labels.key;
+        let held = HeldChord {
+            slot: 0,
+            triad: authored_triad(&session.controls.pad, key, 0, 0),
+            notes: key.mode_map(0).notes(session.controls.pad.chord_slot(0, 0)),
+        };
+        let expected = held_chord_name(&held, 0, labels);
+        assert!(expected.contains("add"), "an extended chord: {expected}");
+        session.vamp = Some(VampState {
+            chord: Some(held),
+            ..VampState::start(0.0, 0)
+        });
+        // The table now holds a different progression under the same slot.
+        session.controls.pad.progression = 3.0;
+        let frame = render_model_with_session(&interaction, &session);
+        let squashed = frame.replace('␠', " ");
+        assert!(squashed.contains(&expected), "missing {expected}: {frame}");
+        assert!(squashed.contains("VAMP"), "{frame}");
+        assert!(!squashed.contains("PUSH"), "{frame}");
     }
 
     #[test]

@@ -358,8 +358,16 @@ impl PushedHarmony {
     /// overpowers the loop: it holds the loop chord sounding when the vamp
     /// began while the loop's clock runs on underneath, so letting go rejoins
     /// the loop where it has got to. A vamp that began before the loop holds
-    /// what it held (the push, or the progression's chord).
+    /// what it held (the push, or the progression's chord). Once the engine
+    /// has captured the vamp's chord (`VampState::chord`) that chord sounds
+    /// outright, so no later push, loop or progression edit moves it.
     pub(crate) fn sounding(&self, beat: f64, vamp: Option<VampState>) -> Option<HeldChord> {
+        if let Some(chord) = vamp
+            .filter(|vamp| vamp.is_active(beat))
+            .and_then(|vamp| vamp.chord)
+        {
+            return Some(chord);
+        }
         let at = vamp
             .filter(|vamp| vamp.is_active(beat))
             .map_or(beat, |vamp| vamp.start_beat);

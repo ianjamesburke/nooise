@@ -214,7 +214,17 @@ pub(crate) fn chord_pitch_name(note: i32) -> &'static str {
 /// `shift` semitones, the Master Key's shift for its progression.
 /// Output-count thinning does not rename harmony.
 pub(crate) fn cell_chord_name(cell: &Cell, shift: i32) -> String {
-    let parts = chord_name_parts(cell);
+    letter_name(chord_name_parts(cell), shift)
+}
+
+/// The same name for a chord known only by its root pitch class and four
+/// notes, such as a held vamp. A third with a flat fifth and no natural
+/// fifth reads as diminished, as it does from a cell.
+pub(crate) fn notes_chord_name(root: i32, notes: [i32; 4], shift: i32) -> String {
+    letter_name(notes_name_parts(root, notes), shift)
+}
+
+fn letter_name(parts: ChordNameParts, shift: i32) -> String {
     let mut name = format!("{}{}", chord_pitch_name(parts.root + shift), parts.body);
     if let Some(bass) = parts.bass {
         name.push('/');
@@ -233,8 +243,27 @@ struct ChordNameParts {
 
 fn chord_name_parts(cell: &Cell) -> ChordNameParts {
     let harmony = cell.harmony;
-    let root = harmony.root_note();
-    let notes = cell.notes();
+    let (roles, role_count) = harmony.intervals();
+    name_parts(
+        harmony.root_note(),
+        cell.notes(),
+        harmony.quality == Quality::Sus4,
+        harmony.fifth == Some(6) && roles[..role_count].contains(&6),
+    )
+}
+
+fn notes_name_parts(root: i32, notes: [i32; 4]) -> ChordNameParts {
+    let has = |interval| {
+        notes
+            .iter()
+            .any(|note| (note - root).rem_euclid(12) == interval)
+    };
+    name_parts(root, notes, false, has(3) && has(6))
+}
+
+/// `sus4_quality`: the chord is authored Sus4 (so a 4th beats a 2nd);
+/// `flat_fifth`: its flat fifth is a declared chord tone.
+fn name_parts(root: i32, notes: [i32; 4], sus4_quality: bool, flat_fifth: bool) -> ChordNameParts {
     let has = |interval| {
         notes
             .iter()
@@ -244,7 +273,7 @@ fn chord_name_parts(cell: &Cell) -> ChordNameParts {
         "m"
     } else if has(4) {
         ""
-    } else if harmony.quality == Quality::Sus4 && has(5) {
+    } else if sus4_quality && has(5) {
         "sus4"
     } else if has(2) {
         "sus2"
@@ -253,9 +282,7 @@ fn chord_name_parts(cell: &Cell) -> ChordNameParts {
     } else {
         "5"
     };
-    let (roles, role_count) = harmony.intervals();
-    let diminished =
-        harmony.fifth == Some(6) && roles[..role_count].contains(&6) && has(6) && !has(7);
+    let diminished = flat_fifth && has(6) && !has(7);
     let seventh = if has(11) {
         "maj7"
     } else if has(10) {
@@ -337,7 +364,16 @@ pub(crate) struct ChordLabels {
 /// with no third (power, suspended) takes the case of the home mode's own
 /// triad on that degree. A slash bass is its degree in the same mode ("I/3").
 pub(crate) fn cell_roman_name(cell: &Cell, tonic: i32, mode: HomeMode) -> String {
-    let parts = chord_name_parts(cell);
+    roman_name(chord_name_parts(cell), tonic, mode)
+}
+
+/// `cell_roman_name` for a chord known only by its root pitch class and
+/// four notes.
+pub(crate) fn notes_roman_name(root: i32, notes: [i32; 4], tonic: i32, mode: HomeMode) -> String {
+    roman_name(notes_name_parts(root, notes), tonic, mode)
+}
+
+fn roman_name(parts: ChordNameParts, tonic: i32, mode: HomeMode) -> String {
     let (accidental, degree) = scale_degree(parts.root - tonic, mode);
     let diminished = parts.body.starts_with("dim");
     // A chord with no third takes the case of the mode's own triad there.

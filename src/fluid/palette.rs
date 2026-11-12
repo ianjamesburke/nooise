@@ -144,6 +144,8 @@ impl PaletteEntry {
                 Operation::ToggleBeatRepeat => "live beat".to_string(),
                 Operation::ResetDownbeat => "beat clock".to_string(),
                 Operation::Chug => "perc groove".to_string(),
+                Operation::FourOnTheFloor => "kick groove".to_string(),
+                Operation::DoubleTime | Operation::HalfTime => "kick and clap groove".to_string(),
                 Operation::ChordNames(_) => "display".to_string(),
                 Operation::OutputDevice => "routing".to_string(),
                 Operation::State(_) => "state bank".to_string(),

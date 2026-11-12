@@ -1653,6 +1653,46 @@ impl FluidEngine {
             }
             self.vamp_active = now_active;
         }
+        self.capture_vamp_chord(timing.beat);
+    }
+
+    /// Fix an active vamp's chord as notes the first sample it has none: the
+    /// push or loop chord sounding as it began, else the progression's chord
+    /// on its slot. From then on the vamp reads this chord, never the table.
+    fn capture_vamp_chord(&mut self, beat: f64) {
+        let Some(vamp) = self
+            .vamp
+            .filter(|vamp| vamp.is_active(beat) && vamp.chord.is_none())
+        else {
+            return;
+        };
+        let pad = &self.effective.pad;
+        let slot = usize::from(vamp.slot);
+        let chord = self.push.sounding(beat, Some(vamp)).unwrap_or_else(|| {
+            let key = MasterKey::from_controls(&self.effective.master);
+            let progression = progression_index(pad.progression);
+            HeldChord {
+                slot: vamp.slot,
+                triad: authored_triad(pad, key, progression, slot),
+                notes: key
+                    .mode_map(progression)
+                    .notes(pad.chord_slot(progression, slot)),
+            }
+        });
+        self.vamp = Some(VampState {
+            chord: Some(chord),
+            ..vamp
+        });
+        let _ = self.session.transact(|snapshot| {
+            if let Some(active) = &mut snapshot.vamp
+                && active.slot == vamp.slot
+                && active.chord.is_none()
+            {
+                active.chord = Some(chord);
+            }
+            Ok::<(), ()>(())
+        });
+        self.observe_published();
     }
 }
 
@@ -2970,6 +3010,65 @@ mod state_tests {
         // it is a whole phrase away, where the bar rule's first new bar was
         // beat 4.
         assert_on_wrap(play_to_landing(&mut engine, &session), 8.0, &engine);
+    }
+
+    /// A vamp holds the notes it landed on: switching the progression, Key or
+    /// Mode underneath changes nothing it plays.
+    #[test]
+    fn a_vamp_keeps_its_chord_through_progression_and_key_edits() {
+        let (session, mut engine) = engine_for(&short_song(120.0));
+        play_until_beat(&mut engine, 2.5);
+        session.update(|s| {
+            s.vamp = Some(VampState::start(2.0, 1));
+            s.vamp_latched = true;
+        });
+        play_until_beat(&mut engine, 3.0);
+        let held = session.load().vamp.and_then(|vamp| vamp.chord);
+        let held = held.expect("the engine captured the vamp's chord");
+        assert_eq!(engine.effective.pad.held_chord, Some(held));
+        session.update(|s| {
+            s.controls.pad.progression = 3.0;
+            s.controls.master.key = 5.0;
+        });
+        play_until_beat(&mut engine, 6.0);
+        assert_eq!(engine.effective.pad.held_chord, Some(held));
+        assert_eq!(session.load().vamp.and_then(|vamp| vamp.chord), Some(held));
+    }
+
+    /// The vamp holds the slot's realized notes, so an extension, an
+    /// inversion and a voicing all survive; the Arp and Lead read them too.
+    #[test]
+    fn a_vamp_keeps_extensions_inversions_and_voicings() {
+        let mut song = short_song(120.0);
+        {
+            let slot = song.controls.pad.edit_chord_slot(1);
+            slot.extension = 6.0; // 9
+            slot.inversion = 1.0;
+            slot.voicing = 2.0;
+        }
+        let progression = progression_index(song.controls.pad.progression);
+        let key = MasterKey::from_controls(&song.controls.master);
+        let authored = key
+            .mode_map(progression)
+            .notes(song.controls.pad.chord_slot(progression, 1));
+        let plain = key
+            .mode_map(progression)
+            .notes(&ChordSlotControls::default());
+        assert_ne!(authored, plain);
+        let (session, mut engine) = engine_for(&song);
+        play_until_beat(&mut engine, 2.5);
+        session.update(|s| {
+            s.vamp = Some(VampState::start(2.0, 1));
+            s.vamp_latched = true;
+        });
+        play_until_beat(&mut engine, 3.0);
+        let held = session.load().vamp.and_then(|vamp| vamp.chord).unwrap();
+        assert_eq!(held.notes, authored);
+        assert_eq!(
+            pad_chord_tones(&engine.effective.pad, key, progression, 1),
+            authored,
+            "every chord follower reads the held notes"
+        );
     }
 
     /// A held or latched Vamp narrows the pad to one chord, so the shared

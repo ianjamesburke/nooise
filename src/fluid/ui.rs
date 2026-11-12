@@ -151,7 +151,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
         header.chords,
         view,
         frame.active_slot,
-        active_vamp.map(|vamp| vamp.is_releasing()),
+        active_vamp,
     );
     if let Some(title) = &view.chord_title {
         f.render_widget(
@@ -346,7 +346,7 @@ fn draw_harmony(
     chords_area: Rect,
     view: &UiViewModel<'_>,
     active_slot: usize,
-    vamp: Option<bool>,
+    vamp: Option<VampState>,
 ) {
     let (session, telemetry, harmony) = (view.session, &view.telemetry, &view.harmony);
     let pad = &session.controls.pad;
@@ -428,7 +428,10 @@ fn draw_harmony(
     let mut spans = vec![Span::styled("CHORDS  ", Style::default().fg(DIM_TEXT))];
     let mut used = "CHORDS  ".len();
     for (index, &slot) in slots.iter().enumerate() {
-        let name = pad_chord_name(pad, window.progression, slot, labels);
+        let name = match vamp.and_then(|vamp| vamp.chord) {
+            Some(held) => held_chord_name(&held, window.progression, labels),
+            None => pad_chord_name(pad, window.progression, slot, labels),
+        };
         let separator = if index == 0 { "" } else { " › " };
         let reserved = if index + 1 < slots.len() { 1 } else { 0 };
         if used + separator.chars().count() + name.chars().count() + reserved
@@ -452,9 +455,13 @@ fn draw_harmony(
         ));
         used += separator.chars().count() + name.chars().count();
     }
-    if let Some(ending) = vamp {
+    if let Some(vamp) = vamp {
         spans.push(Span::styled(
-            if ending { "  VAMP ENDING" } else { "  VAMP" },
+            if vamp.is_releasing() {
+                "  VAMP ENDING"
+            } else {
+                "  VAMP"
+            },
             Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD),
         ));
     }
