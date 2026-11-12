@@ -14,6 +14,9 @@ Accepted ADR is a contract.
 - `0002-v3-chord-model.md` (Accepted; Stage 1 implemented) owns the separation
   of chord harmony, voicing, and rhythm, the gate-aware common-tone rule, and
   the chord payload and migration contracts.
+- `0003-chord-lane-and-clock.md` (Accepted; not implemented) amends 0002:
+  one timed `HarmonyLane`, one stateless `LaneClock`, base/loop/hold layers,
+  downbeat as pure rotation, and the build order.
 
 ## Local Contracts
 
