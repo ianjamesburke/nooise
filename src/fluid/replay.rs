@@ -6427,7 +6427,7 @@ fn shift_g_loops_the_chords_just_played() {
 #[test]
 fn the_palette_sets_mode_and_key_and_mode_is_saved() {
     let mut trace = Vec::new();
-    for query in ["mode dorian", "key d"] {
+    for query in ["mode dorian", "key d", "octave up 1"] {
         trace.push(key(0, FixtureKey::Character('/'), InputPhase::Press));
         trace.extend(
             query
@@ -6448,6 +6448,8 @@ fn the_palette_sets_mode_and_key_and_mode_is_saved() {
     let saved = decode_song_code(result.saved_automation_code.as_deref().unwrap()).unwrap();
     assert_eq!(saved.controls.master.mode, 2.0);
     assert_eq!(saved.controls.master.key, 2.0);
+    assert_eq!(result.control("master.octave"), Some(1.0));
+    assert_eq!(saved.controls.master.octave, 1.0);
     let frame = &result.frames.last().unwrap().text;
     assert!(frame.contains("D Dorian"), "{frame}");
 }

@@ -151,6 +151,7 @@ impl PaletteEntry {
                 Operation::HarmonyQuantize(_) => "where pushes land".to_string(),
                 Operation::SetMode(_) => "master mode".to_string(),
                 Operation::SetKey(_) => "master key".to_string(),
+                Operation::SetOctave(_) => "master octave".to_string(),
                 Operation::ClearSequence => "visible sequence".to_string(),
             },
             Self::Control { spec, .. } | Self::ModuleControl { spec, .. } => (spec.display)(c),

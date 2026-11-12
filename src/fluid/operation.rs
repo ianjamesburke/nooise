@@ -29,6 +29,8 @@ pub(crate) enum Operation {
     SetMode(u8),
     /// Set `master.key`: 0..=11 are C..B.
     SetKey(u8),
+    /// Set `master.octave` to this many octaves, -2..=2.
+    SetOctave(i8),
 }
 
 const MODE_LABELS: [&str; MASTER_MODES.len()] = [
@@ -149,7 +151,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 88] = [
+    pub(crate) const ALL: [Self; 93] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -238,6 +240,11 @@ impl Operation {
         Self::SetKey(9),
         Self::SetKey(10),
         Self::SetKey(11),
+        Self::SetOctave(-2),
+        Self::SetOctave(-1),
+        Self::SetOctave(0),
+        Self::SetOctave(1),
+        Self::SetOctave(2),
     ];
 
     pub(crate) fn spec(self) -> OperationSpec {
@@ -469,6 +476,24 @@ impl Operation {
                 aliases: KEY_ALIASES[usize::from(index)],
                 description: "the key every progression plays in",
             },
+            Self::SetOctave(octaves) => OperationSpec {
+                operation: self,
+                label: match octaves {
+                    -2 => "Octave down 2",
+                    -1 => "Octave down 1",
+                    1 => "Octave up 1",
+                    2 => "Octave up 2",
+                    _ => "Octave 0",
+                },
+                aliases: match octaves {
+                    -2 => &["octave minus 2"],
+                    -1 => &["octave minus 1", "octave down"],
+                    1 => &["octave plus 1", "octave up"],
+                    2 => &["octave plus 2"],
+                    _ => &["octave reset", "octave zero"],
+                },
+                description: "move every pitched voice by whole octaves; drums stay",
+            },
             Self::ClearSequence => OperationSpec {
                 operation: self,
                 label: "Clear sequence",
@@ -503,6 +528,7 @@ impl Operation {
             | Self::HarmonyQuantize(_)
             | Self::SetMode(_)
             | Self::SetKey(_)
+            | Self::SetOctave(_)
             | Self::ToggleVamp
             | Self::ToggleKickBass
             | Self::ToggleBeatRepeat

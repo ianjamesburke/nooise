@@ -62,7 +62,12 @@ pub(crate) struct MasterKey {
     /// A pitch class, C = 0 through B = 11.
     pitch: u8,
     pub(crate) mode: HomeMode,
+    /// The Master Octave: whole octaves every pitched voice moves by.
+    octave: i8,
 }
+
+/// `master.octave`'s range in whole octaves.
+pub(crate) const MASTER_OCTAVE_RANGE: (f32, f32) = (-2.0, 2.0);
 
 /// `master.key`'s song-code value at each dial position, C through B. A code
 /// stores 1 for C because 0 was the retired Home key; a new code never
@@ -77,14 +82,21 @@ impl MasterKey {
         Self {
             pitch: pitch.rem_euclid(12) as u8,
             mode,
+            octave: 0,
         }
     }
 
     pub(crate) fn from_controls(master: &MasterControls) -> Self {
-        Self::new(
-            master.key.round().clamp(0.0, Self::DIAL_MAX) as i32,
-            master_mode(master.mode).1,
-        )
+        Self {
+            octave: master
+                .octave
+                .round()
+                .clamp(MASTER_OCTAVE_RANGE.0, MASTER_OCTAVE_RANGE.1) as i8,
+            ..Self::new(
+                master.key.round().clamp(0.0, Self::DIAL_MAX) as i32,
+                master_mode(master.mode).1,
+            )
+        }
     }
 
     /// The key `progression` is authored in: its tonic and its own mode.
@@ -151,6 +163,13 @@ impl MasterKey {
     /// the shortest way round: -6 through +5.
     pub(crate) fn shift(self, progression: usize) -> i32 {
         (self.pitch() - progression_tonic_pitch_class(progression) + 6).rem_euclid(12) - 6
+    }
+
+    /// The transposition every pitched voice (Pad, Bass, Arp, Lead, Tonal)
+    /// builds `progression`'s notes through: the Key shift plus the Master
+    /// Octave. Perc, Kick and Clap are unpitched and never read it.
+    pub(crate) fn tune(self, progression: usize) -> f32 {
+        (self.shift(progression) + 12 * i32::from(self.octave)) as f32
     }
 
     /// How `progression`'s chords are re-read in this mode.

@@ -24,6 +24,7 @@ pub(crate) struct MasterControls {
     pub(crate) tone: f32,           // -1 (bass) to +1 (treble)
     pub(crate) key: f32,            // pitch class, 0..=11 = C..B
     pub(crate) mode: f32,           // MASTER_MODES row
+    pub(crate) octave: f32,         // whole octaves, MASTER_OCTAVE_RANGE
     pub(crate) swing: f32,          // fallback for voices without a Swing module
     pub(crate) drunken_amount: f32, // 0..1, derived from the Master module
     pub(crate) drunken_pace: f32,   // nominal rise-and-fall length in trigger hits
@@ -39,6 +40,7 @@ impl Default for MasterControls {
             // default song is already derived (`FluidControls::derive_key`).
             key: 9.0,
             mode: 1.0,
+            octave: 0.0,
             swing: 0.0,
             drunken_amount: 0.0,
             drunken_pace: 7.0,

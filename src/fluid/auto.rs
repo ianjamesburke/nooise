@@ -228,6 +228,7 @@ fn waits_for_harmony(spec_id: &str) -> bool {
     spec_id == "pad.progression"
         || spec_id == "master.key"
         || spec_id == "master.key_mode"
+        || spec_id == "master.octave"
         || spec_id.starts_with("pad.chord")
         || spec_id.starts_with("pad.step")
 }

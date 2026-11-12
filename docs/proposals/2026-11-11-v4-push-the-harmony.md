@@ -222,6 +222,9 @@ are relative values over them; Home is neither a key nor a mode.
   (`RetiredControl("master.mode")`); `master.key_mode` replaces it. Both are
   written only when they differ from the progression's own and derived when
   absent, so every built-in loads in its own mode (test-enforced).
+- **Octave.** `master.octave` (-2..+2, default 0) adds whole octaves to the
+  same `MasterKey::tune` the Key shift goes through, so Pad, Bass, Arp, Lead
+  and Tonal move together and drums never do. `/octave up 1`, `/octave 0`.
 - The palette has `/mode <name>` and `/key <pitch>`; black keys are labelled
   as flats with sharp aliases because palette search reads `#` as a word
   break.

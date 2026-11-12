@@ -969,8 +969,8 @@ impl FluidEngine {
     fn route_osc_input(&mut self, cmd: OscVoiceCommand) {
         let controls = &self.effective;
         // Played notes follow the key of the progression sounding now.
-        let tune = MasterKey::from_controls(&controls.master)
-            .shift(self.pad.cursor.window.progression) as f32;
+        let tune =
+            MasterKey::from_controls(&controls.master).tune(self.pad.cursor.window.progression);
         match cmd {
             OscVoiceCommand::PadNoteOn(note) => {
                 self.pad.osc_note_on(note, &controls.pad, tune);

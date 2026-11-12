@@ -85,6 +85,8 @@
   they are the **home**: pushes move in it, `a` returns to its tonic chord,
   Lead's Scale reads its seven notes, and Roman numerals read against it.
   Saved in song codes only when changed.
+- **Master Octave:** Whole octaves (-2..+2) every pitched voice moves by;
+  drums stay. Saved in song codes.
 - **Chord names:** Roman numerals ("i7", the default) or letters ("Am7"), a
   display choice made from `/` that never changes sound or a song code. Roman
   reads each chord against the home: the progression's tonic in the Master

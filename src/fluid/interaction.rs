@@ -2658,6 +2658,12 @@ fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionE
             id: "master.key_mode",
             value_bits: f32::from(index).to_bits(),
         }]),
+        Operation::SetOctave(octaves) => {
+            InteractionEffect::PaletteCommit(vec![PaletteStagedEdit {
+                id: "master.octave",
+                value_bits: f32::from(octaves).to_bits(),
+            }])
+        }
         Operation::SetKey(index) => InteractionEffect::PaletteCommit(vec![PaletteStagedEdit {
             id: "master.key",
             value_bits: f32::from(index).to_bits(),

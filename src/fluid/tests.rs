@@ -2336,6 +2336,102 @@ fn render_seconds(engine: &mut FluidEngine, seconds: f32) -> Vec<(f32, f32)> {
         .collect()
 }
 
+/// The Master Octave moves every pitched voice by whole octaves through the
+/// same transposition the Key uses: each Pad, Arp, Lead and Bass note a
+/// bridge hears is exactly 12 semitones higher, and Tonal reads the same
+/// `MasterKey::tune`.
+#[test]
+fn the_master_octave_moves_every_pitched_voice_by_whole_octaves() {
+    let key = |octave: f32| {
+        let mut master = FluidControls::default().master;
+        master.octave = octave;
+        MasterKey::from_controls(&master)
+    };
+    assert_eq!(key(0.0).tune(0), 0.0);
+    assert_eq!(key(1.0).tune(0), 12.0);
+    assert_eq!(key(-2.0).tune(0), -24.0);
+    assert_eq!(key(9.0).tune(0), 24.0, "clamped to +2");
+    let events = |octave: f32| {
+        let mut controls = FluidControls::default();
+        controls.master.octave = octave;
+        controls.master.bpm = 120.0;
+        controls.arp.gain = 0.5;
+        controls.lead.level = 0.5;
+        controls.bass.level = 0.5;
+        let session = live_session(controls, AutomationState::default());
+        let (sink, receiver) = OscVoiceSink::test_channel();
+        let mut engine = FluidEngine::new(
+            SAMPLE_RATE,
+            session,
+            no_morph(),
+            Arc::new(FluidTelemetry::default()),
+        )
+        .with_osc_voice(sink);
+        engine.reseed(7);
+        render_seconds(&mut engine, 4.0);
+        receiver.try_iter().collect::<Vec<_>>()
+    };
+    let up = |event: OscVoiceEvent| match event {
+        OscVoiceEvent::PadChord(mut notes) => {
+            for note in &mut notes.notes[..notes.len] {
+                *note += 12;
+            }
+            OscVoiceEvent::PadChord(notes)
+        }
+        OscVoiceEvent::ArpNote { note, gate_beats } => OscVoiceEvent::ArpNote {
+            note: note + 12,
+            gate_beats,
+        },
+        OscVoiceEvent::LeadNote { note, gate_beats } => OscVoiceEvent::LeadNote {
+            note: note + 12,
+            gate_beats,
+        },
+        OscVoiceEvent::LeadOff(note) => OscVoiceEvent::LeadOff(note + 12),
+        OscVoiceEvent::BassNote { note, decay_beats } => OscVoiceEvent::BassNote {
+            note: note + 12,
+            decay_beats,
+        },
+        other => other,
+    };
+    let concert = events(0.0);
+    for kind in [
+        |e: &OscVoiceEvent| matches!(e, OscVoiceEvent::PadChord(_)),
+        |e: &OscVoiceEvent| matches!(e, OscVoiceEvent::ArpNote { .. }),
+        |e: &OscVoiceEvent| matches!(e, OscVoiceEvent::BassNote { .. }),
+    ] {
+        assert!(concert.iter().any(kind), "{concert:?}");
+    }
+    assert_eq!(events(1.0), concert.into_iter().map(up).collect::<Vec<_>>());
+}
+
+/// Drums are unpitched: the Master Octave leaves a Kick, Clap and Perc mix
+/// sample-for-sample the same.
+#[test]
+fn the_master_octave_leaves_the_drums_alone() {
+    let render = |octave: f32| {
+        let mut controls = FluidControls::default();
+        controls.master.octave = octave;
+        controls.perc.level = 0.5;
+        let session = live_session(controls, AutomationState::default());
+        session.update(|snapshot| {
+            for tab in [Tab::Chords, Tab::Bass, Tab::Arp, Tab::Lead, Tab::Tonal] {
+                snapshot.muted[tab as usize] = true;
+            }
+        });
+        let mut engine = FluidEngine::new(
+            SAMPLE_RATE,
+            session,
+            no_morph(),
+            Arc::new(FluidTelemetry::default()),
+        );
+        engine.reseed(7);
+        render_seconds(&mut engine, 2.0)
+    };
+    let drums = render(0.0);
+    assert!(rms(&drums) > 0.0);
+    assert_eq!(render(2.0), drums);
+}
+
 #[test]
 fn osc_output_voices_the_initial_pad_at_zero_audio_level_and_releases_on_stop() {
     let mut controls = FluidControls::default();
@@ -4342,7 +4438,7 @@ fn tab_controls_classify_each_slider_kind() {
             Tab::Master,
             vec![
                 Gain, Gain, Gain, Gain, Gain, Gain, Gain, Gain, Timing, Gain, Continuous, Discrete,
-                Discrete, Gain, Continuous,
+                Discrete, Discrete, Gain, Continuous,
             ],
         ),
         (
@@ -4841,12 +4937,13 @@ fn song_codes_carry_the_master_key_and_mode_only_when_changed() {
     );
     controls.master.key = 2.0;
     controls.master.mode = 2.0;
+    controls.master.octave = -1.0;
     let chosen = song::encode_song_code(&SongState::from_controls(controls)).unwrap();
     let decoded = song::decode_song_code(&chosen).unwrap();
-    assert_eq!(
-        MasterKey::from_controls(&decoded.controls.master),
-        MasterKey::new(2, HomeMode::Dorian)
-    );
+    let key = MasterKey::from_controls(&decoded.controls.master);
+    assert_eq!(key.label(), "D Dorian");
+    assert_eq!(decoded.controls.master.octave, -1.0);
+    assert_eq!(key.tune(harvest), -3.0 - 12.0, "F to D, an octave down");
 }
 
 /// The Home-capable Mode is retired by name; Home was never written for

@@ -345,7 +345,12 @@ step chords take its qualities, and `a` goes to its tonic chord. A pushed
 chord and a loop keep the notes they were given; changing Key or Mode
 mid-push leaves the sounding pushed chord alone and only later moves follow
 the new home. To hear a loop in another mode, push it there and grab it
-again. The header names the
+again.
+
+Octave (-2 to +2, default 0, `/octave up 1`) moves every pitched voice (Pad,
+Bass, Arp, Lead, Tonal) by whole octaves; Perc, Kick and Clap stay. Like a
+Key change it lands on each voice's next note, the Pad on its next chord.
+It is saved in song codes and lands with the harmony in a morph. The header names the
 home (`KEY  Am`, `KEY  A`, `KEY  A Dorian`), and chords in the header and
 the Space overlay read as Roman numerals in that home: upper case major,
 lower case minor, `°` diminished, a flat for a root off the scale (`bVI`),

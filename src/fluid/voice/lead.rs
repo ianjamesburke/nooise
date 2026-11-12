@@ -728,7 +728,7 @@ impl LeadEngine {
     ) -> (f32, f32) {
         // The same chord-source path Pad, Bass, and Arp resolve through.
         let (progression, slot) = self.progression.follow(pad, timing);
-        let tune = key.shift(progression) as f32;
+        let tune = key.tune(progression);
         let osc_enabled = !self.osc_suppressed && self.osc.is_attached();
         if !osc_enabled || timing.transport != self.transport {
             self.release_osc();

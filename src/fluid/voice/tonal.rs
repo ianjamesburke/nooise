@@ -429,7 +429,7 @@ impl TonalEngine {
         timing: TimingContext,
     ) -> (f32, f32) {
         let (progression, slot) = self.progression.follow(pad, timing);
-        let tune = key.shift(progression) as f32;
+        let tune = key.tune(progression);
         self.sync_sequence(c);
 
         if timing.transport == Transport::Stopped {

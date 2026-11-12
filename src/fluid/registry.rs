@@ -1652,6 +1652,23 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &layer_controls!(
         )
         .search_name("master mode scale harmony")
         .reset_at(1.0),
+        ControlSpec::new(
+            "master.octave",
+            "Octave",
+            ControlKind::Discrete,
+            MASTER_OCTAVE_RANGE.0,
+            MASTER_OCTAVE_RANGE.1,
+            Step::Linear(1.0),
+            Entry::Round,
+            |c| c.master.octave,
+            |c, v| c.master.octave = v,
+            |c| match c.master.octave.round() as i32 {
+                0 => "0".to_string(),
+                octaves => format!("{octaves:+}"),
+            },
+        )
+        .search_name("master octave register transpose")
+        .reset_at(0.0),
     ]
 );
 

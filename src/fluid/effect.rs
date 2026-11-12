@@ -3418,7 +3418,7 @@ mod tests {
             beat: 0.0,
             flipped: &mut flipped,
         };
-        assert_eq!(tab_specs(Tab::Master)[13].id, "master.slot1.kind");
+        assert_eq!(tab_specs(Tab::Master)[14].id, "master.slot1.kind");
         for effect in [
             InteractionEffect::AdjustSelected(1),
             InteractionEffect::CommitNumeric(2.0),

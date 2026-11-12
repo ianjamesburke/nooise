@@ -322,7 +322,7 @@ impl BassEngine {
         timing: TimingContext,
     ) -> (f32, f32) {
         let (progression, slot) = self.progression.follow(pad, timing);
-        let tune = key.shift(progression) as f32;
+        let tune = key.tune(progression);
         if self.osc_suppressed || timing.transport != self.transport {
             self.release_osc();
         }

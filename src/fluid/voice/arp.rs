@@ -306,7 +306,7 @@ impl ArpEngine {
         // resolve through, so a custom progression drives all three
         // identically.
         let (progression, slot) = self.progression.follow(pad, timing);
-        let tune = key.shift(progression) as f32;
+        let tune = key.tune(progression);
         let osc_enabled = !self.osc_suppressed && self.osc.is_attached();
         if self.osc_active_until_beat.is_some()
             && (!osc_enabled

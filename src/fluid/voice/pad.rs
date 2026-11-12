@@ -103,7 +103,7 @@ impl PadEngine {
         telemetry: Arc<FluidTelemetry>,
     ) -> Self {
         let cursor = ProgressionCursor::new(c);
-        let tune = key.shift(cursor.window.progression) as f32;
+        let tune = key.tune(cursor.window.progression);
         let active_character = wrapped_index(c.voice_type, PAD_TYPES.len());
         let last_chord_definition = *c.chord_slot(cursor.window.progression, cursor.slot());
         let last_mode_map = key.mode_map(cursor.window.progression);
@@ -344,7 +344,7 @@ impl PadEngine {
         let old_progression = self.cursor.window.progression;
         let old_morph_start = self.cursor.morph_phrase_start;
         let advance = self.cursor.tick(c, timing);
-        let tune = key.shift(self.cursor.window.progression) as f32;
+        let tune = key.tune(self.cursor.window.progression);
         let phrase_reset = !self.phrase_sent
             || (timing.morph_phrase_start.is_some()
                 && timing.morph_phrase_start != old_morph_start)

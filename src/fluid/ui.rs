@@ -1377,6 +1377,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
             ],
             &[("\u{232b}", "undo"), ("let go", "close")],
             &[("/mode", "master mode"), ("/key", "master key")],
+            &[("/octave", "every pitched voice up/down")],
         ],
     ));
     lines.extend(state(
