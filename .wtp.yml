@@ -4,6 +4,6 @@ defaults:
 hooks:
   post_create:
     - type: command
-      command: cargo build
+      command: bash ~/Documents/GitHub/PLEXI/scripts/cargo-with-lease.sh cargo build
     - type: command
       command: wtp list
