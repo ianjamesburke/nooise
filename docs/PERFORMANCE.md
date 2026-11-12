@@ -275,13 +275,21 @@ not a state worth sharing, so a loaded code always plays.
 
 ## Downbeat reset
 
-When the grid stops matching the beat you feel, press `d` just before the
-beat you feel as one, or use `/downbeat` (also `reset downbeat`, `beat one`,
-`bar one`). The next beat line becomes beat one of bar one. The beat itself
-never moves: the tempo and the beat phase stay the same, and only the bar
-numbering rotates by whole beats. Nothing jumps mid-beat. It works from
+When the grid stops matching the beat you feel, press `d` on the beat you
+feel as one, or use `/downbeat` (also `reset downbeat`, `beat one`, `bar
+one`). The nearest beat line becomes beat one of bar one: a press up to half
+a beat early waits for the line, and a press up to half a beat late takes
+the line just played, so a slightly late tap is never a beat late. The beat
+itself never moves: the tempo and the beat phase stay the same, and only the
+bar numbering rotates by whole beats. Nothing jumps mid-beat. It works from
 browsing on every terminal, as a press edge with no key-release support
-needed. Pressing again before the line changes nothing.
+needed. Pressing again before a line ahead changes nothing.
+
+A late press applies at once, as though the line just played had been beat
+one all along: everything below counts from that line. Hits the old grid
+played between the line and the press stand, and nothing is replayed late,
+so if the new step 1 was silent on the old grid, the first new hit is the
+next one due.
 
 - Harmony: the chord sounding on the line rings on without being struck
   again and starts its count over, so the next chord arrives one full chord
@@ -302,7 +310,7 @@ needed. Pressing again before the line changes nothing.
   and Lead phrase history clear, as they do after Shift+P.
 - Beat Repeat: a held loop keeps its captured beat and stays on the beat,
   since the line is a beat line. A hold that has not started looping yet
-  begins one beat later.
+  keeps its count and starts on the line it would have.
 - Auto: the morph keeps going, moved back with the restarted chord, so its
   phrases stay on the chords. Pressing `d` doesn't count as an edit, so auto
   keeps running.

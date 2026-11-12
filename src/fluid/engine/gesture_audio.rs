@@ -465,6 +465,16 @@ impl BeatRepeat {
         output
     }
 
+    /// A downbeat reset renumbered the beats `by` whole beats without moving
+    /// the clock's phase: the beat in progress keeps its own start, so no
+    /// grid line is invented mid-beat and an armed hold keeps its count.
+    fn renumber(&mut self, by: i64) {
+        self.beat_index = self.beat_index.map(|index| index - by);
+        if let RepeatState::Armed { beat, .. } = &mut self.state {
+            *beat -= by;
+        }
+    }
+
     /// The clock entered a new beat at the current frame. An armed hold whose
     /// beat just ended copies it and starts looping; a hold that cannot use
     /// this line (no pre-roll yet, or not one beat long) re-arms on it.
@@ -578,6 +588,11 @@ impl GestureAudioBank {
             max_delay_samples,
             sample_rate,
         }
+    }
+
+    /// See `BeatRepeat::renumber`.
+    pub(super) fn renumber_beats(&mut self, by: i64) {
+        self.fx.repeat.renumber(by);
     }
 
     pub(super) fn process(

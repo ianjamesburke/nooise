@@ -64,7 +64,7 @@ pub(crate) struct LiveSessionSnapshot {
     /// Counts explicit restarts, including stop/play between audio reads.
     pub(crate) transport_restart: u64,
     /// Counts downbeat reset requests. Live-only: the audio engine makes the
-    /// next beat line after it observes a change beat one of bar one.
+    /// beat line nearest where it observes a change beat one of bar one.
     pub(crate) downbeat_reset: u64,
     /// Counts downbeat resets the audio engine has applied, each moving the
     /// clock back by `downbeat_shift` whole beats. Live-only.

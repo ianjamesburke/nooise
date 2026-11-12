@@ -907,8 +907,12 @@ impl FluidEngine {
                 cursor.restart_at_line(line);
             }
         }
-        // The line is reached within one sample, so beat zero is exact to it.
-        self.tempo.restart();
+        // A line reached on this sample is beat zero exactly; a line already
+        // past keeps the beats played since it, so the phase never moves.
+        let since = self.tempo.beat - line;
+        let per_sample = self.tempo.bpm / (60.0 * self.tempo.sample_rate);
+        self.tempo.beat = if since < per_sample { 0.0 } else { since };
+        self.gesture_audio.renumber_beats(line as i64);
         self.vamp_landed_beat = self.vamp_landed_beat.map(|beat| beat - shift);
         self.vamp_landed_at = self.vamp_landed_at.map(|beat| beat - shift);
         self.morph_writer = MorphWriter::default();
@@ -1072,13 +1076,15 @@ impl StereoEngine for FluidEngine {
             self.transport_restart = self.observed.transport_restart;
             self.restart_sequence();
         }
-        // A requested reset waits for the next beat line, so the beat phase
-        // never moves. A restart already starts at bar one, so it absorbs a
-        // reset requested in the same generation.
+        // A requested reset takes the nearest beat line, within half a beat
+        // either side: one ahead is waited for, one just past applies now as
+        // though it had been beat zero. Either way the beat phase never
+        // moves. A restart already starts at bar one, so it absorbs a reset
+        // requested in the same generation.
         if self.observed_unapplied && self.downbeat_reset != self.observed.downbeat_reset {
             self.downbeat_reset = self.observed.downbeat_reset;
             if !restarting {
-                self.downbeat_line = Some((self.tempo.beat - GRID_BEAT_EPSILON).ceil());
+                self.downbeat_line = Some(nearest_beat_line(self.tempo.beat));
             }
         }
         let reanchoring = self.transport == Transport::Playing
@@ -1698,6 +1704,12 @@ impl FluidEngine {
             self.push = landed;
         }
     }
+}
+
+/// The beat line nearest `beat`: a press within half a beat after a line
+/// means that line, so a slightly late tap is not a beat late.
+fn nearest_beat_line(beat: f64) -> f64 {
+    (beat + GRID_BEAT_EPSILON).round()
 }
 
 fn faster_perc_interval(interval_beats: f32) -> f32 {

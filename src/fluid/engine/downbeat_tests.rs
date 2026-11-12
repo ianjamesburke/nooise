@@ -175,7 +175,7 @@ impl Player {
 }
 
 #[test]
-fn d_waits_for_the_next_beat_line_and_makes_it_beat_one() {
+fn d_before_the_nearest_line_waits_for_it_and_makes_it_beat_one() {
     let mut player = Player::new(&song(), Vec::new());
     player.play_until(5.6);
     let tempo = player.engine.tempo.bpm;
@@ -517,4 +517,146 @@ fn slash_downbeat_resets_through_the_palette() {
     let landed_from = player.cross_line();
     assert!((landed_from - 6.0).abs() < player.per_sample());
     assert_eq!(player.session.load().downbeat_applied, 1);
+}
+
+#[test]
+fn the_nearest_line_wins_within_half_a_beat_either_side() {
+    for (pressed, line) in [(5.6, 6.0), (6.3, 6.0), (6.49, 6.0), (6.51, 7.0)] {
+        let mut player = Player::new(&song(), Vec::new());
+        let mut twin = Player::new(&song(), Vec::new());
+        player.play_until(pressed);
+        twin.play_until(pressed);
+        player.downbeat();
+        while player.engine.tempo.beat > 1.0 {
+            player.step();
+            twin.step();
+        }
+        let rotation = twin.engine.tempo.beat - player.engine.tempo.beat;
+        assert!(
+            (rotation - line).abs() < player.per_sample(),
+            "pressed at {pressed}: rotated {rotation}, wanted line {line}"
+        );
+    }
+}
+
+#[test]
+fn d_just_after_a_line_makes_that_line_beat_one_at_once() {
+    let mut player = Player::new(&song(), Vec::new());
+    let mut twin = Player::new(&song(), Vec::new());
+    player.play_until(6.3);
+    twin.play_until(6.3);
+    let tempo = player.engine.tempo.bpm;
+    let slot = player.engine.pad.cursor.slot();
+    let chords = player.chord_pulses();
+    let kicks = player.kick_pulses();
+
+    player.downbeat();
+    let landed_from = player.cross_line();
+    twin.step();
+    assert!(
+        landed_from < 6.31,
+        "applied on the next sample, not a beat later"
+    );
+    assert!(
+        (twin.engine.tempo.beat - player.engine.tempo.beat - 6.0).abs() < 1e-9,
+        "the phase never moves: old beat 6 is beat zero"
+    );
+    assert_eq!(player.engine.tempo.bpm, tempo, "tempo is unchanged");
+    assert_eq!(
+        player.kick_pulses(),
+        kicks,
+        "the missed line is not replayed late"
+    );
+    assert_eq!(player.chord_pulses(), chords, "nothing struck at the reset");
+    assert_eq!(player.engine.pad.cursor.slot(), slot);
+    let span = player.engine.pad.cursor.chord_span();
+    assert_eq!(
+        (span.start_beat, span.length_beats),
+        (0.0, 4.0),
+        "the chord counts from the past line"
+    );
+    // The Kick lane reads the new grid: steps 1 and 4 of the two-beat cycle
+    // are new beats 0 and 0.75, and 0 is behind us.
+    assert_eq!(player.kick_beats(3.0), vec![0.75, 2.0, 2.75]);
+    player.play_until(4.01);
+    assert_eq!(
+        player.engine.pad.cursor.slot(),
+        (slot + 1) % 4,
+        "the next chord lands one full chord after the line"
+    );
+}
+
+#[test]
+fn a_late_press_on_a_chord_change_keeps_the_chord_that_just_struck() {
+    let mut player = Player::new(&song(), Vec::new());
+    player.play_until(8.2);
+    let slot = player.engine.pad.cursor.slot();
+    let chords = player.chord_pulses();
+
+    player.downbeat();
+    player.cross_line();
+
+    assert_eq!(player.engine.pad.cursor.slot(), slot, "no chord is skipped");
+    assert_eq!(player.chord_pulses(), chords, "and none struck twice");
+    let span = player.engine.pad.cursor.chord_span();
+    assert_eq!((span.start_beat, span.length_beats), (0.0, 4.0));
+}
+
+#[test]
+fn a_late_press_moves_a_waiting_push_to_the_new_grid() {
+    let mut player = Player::new(&song(), Vec::new());
+    player.play_until(6.2);
+    player.session.update(|snapshot| {
+        snapshot.push.set_quantize(PushQuantize::OneBar, 6.2);
+        snapshot.push.queued = Some(QueuedPush {
+            target: Triad::C_MAJOR,
+            land_beat: 8.0,
+        });
+    });
+
+    player.downbeat();
+    player.cross_line();
+
+    let queued = player.session.load().push.queued.expect("still waiting");
+    assert_eq!(
+        queued.land_beat, 4.0,
+        "old 8 is new 2; the next bar line is 4"
+    );
+}
+
+#[test]
+fn an_armed_beat_repeat_keeps_its_beat_through_a_late_press() {
+    let mut player = Player::new(&song(), Vec::new());
+    let mut dry = Player::new(&song(), Vec::new());
+    player.play_until(6.1);
+    dry.play_until(6.1);
+    player.key(KeyCode::Char('b'), KeyModifiers::NONE, KeyEventKind::Press);
+    player.play_until(6.3);
+    dry.play_until(6.3);
+
+    player.downbeat();
+    dry.downbeat();
+    player.cross_line();
+    dry.cross_line();
+    // Armed in old beat 6, now beat 0: it still loops from the next line.
+    let mut before = 0.0f32;
+    while player.engine.tempo.beat < 1.0 - player.per_sample() {
+        let wet = player.step().1;
+        let clean = dry.step().1;
+        before = before.max((wet.0 - clean.0).abs());
+    }
+    assert_eq!(
+        before, 0.0,
+        "armed, not looping, through the rest of the beat"
+    );
+    let mut after = 0.0f32;
+    while player.engine.tempo.beat < 1.5 {
+        let wet = player.step().1;
+        let clean = dry.step().1;
+        after = after.max((wet.0 - clean.0).abs());
+    }
+    assert!(
+        after > 0.01,
+        "the loop engages on the next line, not a beat late"
+    );
 }

@@ -1419,9 +1419,10 @@ impl EffectExecutor {
         }
     }
 
-    /// Make the next beat line beat one of bar one. Like the transport it is
-    /// an overlay on the song, not an edit: auto, MRU and tempo are untouched.
-    /// This only requests it; the audio engine applies it on the line
+    /// Make the nearest beat line beat one of bar one. Like the transport it
+    /// is an overlay on the song, not an edit: auto, MRU and tempo are
+    /// untouched. This only requests it; the audio engine applies it on the
+    /// line, or at once when the line just passed
     /// (`FluidEngine::reanchor_downbeat`), and `poll_output_routing` moves
     /// the executor's own beat-stamped state once it has.
     pub(crate) fn reset_downbeat(&mut self) -> EffectAcknowledgement {
@@ -1432,7 +1433,7 @@ impl EffectExecutor {
         let snapshot = self.session.update(|snapshot| {
             snapshot.downbeat_reset = snapshot.downbeat_reset.wrapping_add(1);
         });
-        self.show_message("Downbeat: bar one on the next beat".to_string());
+        self.show_message("Downbeat: bar one on the nearest beat".to_string());
         EffectAcknowledgement::Published {
             generation: snapshot.generation,
         }
