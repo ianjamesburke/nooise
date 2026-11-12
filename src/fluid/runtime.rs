@@ -559,7 +559,7 @@ pub(crate) fn map_input(
             if unmodified {
                 browsing_binding(&key.code)
             } else if shifted {
-                shifted_binding(&key.code)
+                browsing_shifted_binding(&key.code)
             } else {
                 return deferred_runtime(MODIFIED_BINDING_UNOWNED);
             }
@@ -652,13 +652,23 @@ fn browsing_binding(code: &PhysicalKey) -> Option<Intent> {
         // glyph some terminals send) grabs the pushed harmony.
         PhysicalKey::Character('g') => Intent::OpenGrab { harmony: false },
         PhysicalKey::Character('G') => Intent::OpenGrab { harmony: true },
-        // Downbeat: the left middle finger's home key, so the move that sets
-        // the timing reference is played eyes-closed on the beat.
-        PhysicalKey::Character('d') => Intent::ResetDownbeat,
+        // The bare glyph some terminals send for Shift+D; see
+        // `browsing_shifted_binding`.
+        PhysicalKey::Character('D') => Intent::ResetDownbeat,
         PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
         PhysicalKey::Enter => Intent::TouchSelected,
         _ => return slider_binding(code),
     })
+}
+
+/// Shift chords Browsing answers to: the downbeat reset, shifted so a stray
+/// home-row tap cannot move bar one, then the chords it shares with
+/// Automation.
+fn browsing_shifted_binding(code: &PhysicalKey) -> Option<Intent> {
+    match *code {
+        PhysicalKey::Character('D' | 'd') => Some(Intent::ResetDownbeat),
+        _ => shifted_binding(code),
+    }
 }
 
 fn automation_binding(code: &PhysicalKey) -> Option<Intent> {
@@ -1786,6 +1796,35 @@ mod tests {
             map(Modifiers::SHIFT),
             InputMapping::Action(SemanticAction::press(Intent::ToggleTransport))
         );
+    }
+
+    #[test]
+    fn only_shift_d_resets_the_downbeat_and_only_in_browsing() {
+        let map = |mode: &InteractionMode, character, modifiers| {
+            map_input(
+                mode,
+                &TransportEvent::key(
+                    PhysicalKey::Character(character),
+                    modifiers,
+                    InputPhase::Press,
+                ),
+                TerminalCapabilities::full(),
+            )
+        };
+        let reset = InputMapping::Action(SemanticAction::press(Intent::ResetDownbeat));
+        let browsing = InteractionMode::Browsing;
+        assert_eq!(
+            map(&browsing, 'd', Modifiers::default()),
+            InputMapping::Ignored
+        );
+        assert_eq!(map(&browsing, 'D', Modifiers::SHIFT), reset);
+        assert_eq!(map(&browsing, 'd', Modifiers::SHIFT), reset);
+        // Some terminals send the bare glyph without reporting SHIFT.
+        assert_eq!(map(&browsing, 'D', Modifiers::default()), reset);
+        let automation = InteractionMode::Automation(
+            super::super::interaction::AutomationMode::new(AutomationKind::Lfo),
+        );
+        assert_ne!(map(&automation, 'D', Modifiers::SHIFT), reset);
     }
 
     #[test]

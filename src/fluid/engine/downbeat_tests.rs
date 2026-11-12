@@ -115,7 +115,7 @@ impl Player {
     }
 
     fn downbeat(&mut self) {
-        self.tap('d');
+        self.tap('D');
     }
 
     /// Render one sample; returns the beat that sample played at.

@@ -1333,7 +1333,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
             &[
                 ("a", "chord vamp (hold/tap)"),
                 ("b", "beat repeat (hold / palette)"),
-                ("d", "downbeat (nearest beat is one)"),
+                ("\u{21e7}D", "downbeat (nearest beat is one)"),
             ],
         ],
     ));

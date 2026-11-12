@@ -34,7 +34,7 @@
 - **Transport:** whether the beat clock runs (`Transport::Playing` or
   `Stopped`). Stopped holds the beat and fires no grid hit while audio keeps
   running, so tails ring out. Live-session state, never in a song code.
-- **Downbeat reset:** `d` or `/downbeat` makes the next beat line beat one of
+- **Downbeat reset:** Shift+D or `/downbeat` makes the nearest beat line beat one of
   bar one. The beat phase never moves; bars rotate by whole beats. The
   sounding chord restarts its count instead of changing, and every grid
   restarts at step 1. It is live-only and never in a song code.
