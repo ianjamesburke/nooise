@@ -31,6 +31,9 @@ pub(crate) enum RecipeLane {
     },
 }
 
+/// `/sc` is audible on insertion; every other recipe starts at Amount 0%.
+const SIDECHAIN_START_DEPTH: f32 = 0.10;
+
 pub(crate) const RECIPES: &[Recipe] = &[
     Recipe {
         id: RecipeId::Rhythm,
@@ -75,11 +78,11 @@ pub(crate) const RECIPES: &[Recipe] = &[
         id: RecipeId::Sidechain,
         name: "Sidechain",
         aliases: &["sc"],
-        description: "beat ramp duck, 1 beat, starts silent",
+        description: "beat ramp duck, 1 beat, starts at 10%",
         lane: RecipeLane::Lfo {
             shape: LfoShape::Ramp,
             beats: 1.0,
-            depth: 0.0,
+            depth: SIDECHAIN_START_DEPTH,
             seed: 0,
             ramp: RampParams {
                 anchor: -1.0,
@@ -399,7 +402,12 @@ mod tests {
             match recipe.lane {
                 RecipeLane::Lfo { beats, depth, .. } => {
                     assert!((MIN_LFO_CYCLE_BEATS..=MAX_LFO_CYCLE_BEATS).contains(&beats));
-                    assert_eq!(depth, 0.0);
+                    let expected = if id == RecipeId::Sidechain {
+                        SIDECHAIN_START_DEPTH
+                    } else {
+                        0.0
+                    };
+                    assert_eq!(depth, expected);
                 }
             }
         }
@@ -476,7 +484,7 @@ mod tests {
             ));
             assert_eq!(
                 entry.display_text(),
-                "Sidechain · beat ramp duck, 1 beat, starts silent"
+                "Sidechain · beat ramp duck, 1 beat, starts at 10%"
             );
             assert!(found.hits.iter().all(|&index| index < "Sidechain".len()));
         }
@@ -506,7 +514,8 @@ mod tests {
         };
         assert_eq!(route.shape, LfoShape::Ramp);
         assert_eq!(route.ramp.anchor, -1.0);
-        assert_eq!(value(0.0), 0.75);
+        assert_eq!(route.depth_ratio, 0.10);
+        assert!(value(0.0) < 0.75, "/sc ducks audibly on insertion");
         assert_eq!(snapshot.controls.pad.level, 0.75);
         let mut raised = *route;
         raised.depth_ratio = 0.25;
