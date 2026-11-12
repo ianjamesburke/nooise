@@ -17,6 +17,8 @@ use crate::fx::reverb::{FdnReverb, ReverbParams};
 use super::*;
 
 #[cfg(test)]
+mod downbeat_probe;
+#[cfg(test)]
 mod downbeat_tests;
 mod gesture_audio;
 #[cfg(test)]
