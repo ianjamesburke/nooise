@@ -259,12 +259,17 @@ pub(crate) enum HarmonyMove {
     StepDownThree,
     StepUpTwo,
     StepUpThree,
+    /// Raise the root a half step to a diminished triad: from a major chord
+    /// only the root moves (G B D to G# B D), the vii° of the chord a step
+    /// up, so the next step up resolves it (G, G#dim, Am: a rising bass).
+    RaiseRoot,
 }
 
 /// One move, the key that plays it, and the overlay's word for it. The step
 /// moves sit in two columns of a columnar keyboard: `u`/`j`/`m` go down 2, 1
 /// and 3 scale steps, and `i`/`k`/`,` go up 2, 1 and 3, so the row above and
-/// below the home key is a bigger step the same way.
+/// below the home key is a bigger step the same way. `o`, above `l`, raises
+/// the root a half step.
 pub(crate) struct HarmonyMoveRow {
     pub(crate) harmony_move: HarmonyMove,
     pub(crate) key: char,
@@ -273,7 +278,7 @@ pub(crate) struct HarmonyMoveRow {
 
 /// The single key table for the moves, in `HarmonyMove` discriminant order
 /// (test-enforced). The runtime key map, the overlay and the help read it.
-pub(crate) const HARMONY_MOVES: [HarmonyMoveRow; 12] = [
+pub(crate) const HARMONY_MOVES: [HarmonyMoveRow; 13] = [
     HarmonyMoveRow {
         harmony_move: HarmonyMove::StepDown,
         key: 'j',
@@ -334,6 +339,11 @@ pub(crate) const HARMONY_MOVES: [HarmonyMoveRow; 12] = [
         key: ',',
         label: "↑3",
     },
+    HarmonyMoveRow {
+        harmony_move: HarmonyMove::RaiseRoot,
+        key: 'o',
+        label: "♯",
+    },
 ];
 
 impl HarmonyMove {
@@ -380,6 +390,7 @@ impl HarmonyMove {
                 TriadQuality::Diminished => Triad::new(root - 4, TriadQuality::Major),
             },
             Self::Home => key.tonic_triad(),
+            Self::RaiseRoot => Triad::new(root + 1, TriadQuality::Diminished),
         }
     }
 }
@@ -458,8 +469,13 @@ mod tests {
     fn the_key_table_is_in_move_order_with_distinct_home_row_keys() {
         for (index, row) in HARMONY_MOVES.iter().enumerate() {
             assert_eq!(row.harmony_move as usize, index);
-            // The home row plus the rows above and below the step columns.
-            assert!("asdfhjkluim,".contains(row.key), "{} is unplanned", row.key);
+            // The home row, the rows above and below the step columns, and
+            // `o` above `l`.
+            assert!(
+                "asdfhjkluim,o".contains(row.key),
+                "{} is unplanned",
+                row.key
+            );
             assert_eq!(HarmonyMove::from_key(row.key), Some(row.harmony_move));
         }
         let mut keys: Vec<char> = HARMONY_MOVES.iter().map(|row| row.key).collect();
@@ -664,6 +680,44 @@ mod tests {
     fn names_follow_the_master_key_shift() {
         assert_eq!(am().name(3), "Cm");
         assert_eq!(Triad::new(11, TriadQuality::Diminished).name(0), "Bdim");
+    }
+
+    #[test]
+    fn raising_the_root_is_a_rising_bass_that_a_step_up_resolves() {
+        use TriadQuality::{Diminished, Major};
+        let g = Triad::new(7, Major);
+        let lifted = HarmonyMove::RaiseRoot.apply(g, A_MINOR);
+        assert_eq!(lifted, Triad::new(8, Diminished), "G to G#dim");
+        assert_eq!(A_MINOR.roman(lifted), "#vii°");
+        assert_eq!(
+            HarmonyMove::StepUp.apply(lifted, A_MINOR),
+            am(),
+            "resolves to Am"
+        );
+        // From a major chord only the root voice moves: G B D to G# B D.
+        let sounding = [43, 55, 59, 62];
+        assert_eq!(voice_lead(lifted, sounding), [44, 56, 59, 62]);
+        let moved: i32 = voice_lead(lifted, [47, 50, 55, 59])
+            .iter()
+            .zip([47, 50, 55, 59])
+            .map(|(to, from)| (to - from).abs())
+            .sum();
+        assert_eq!(moved, 1, "one voice, one semitone");
+        // From a minor chord the root and the minor third both rise: Am
+        // (A C E) to A#dim (A# C# E), the vii° of B, and a step up lands on
+        // the scale's own chord there (Bdim in A minor).
+        let from_minor = HarmonyMove::RaiseRoot.apply(am(), A_MINOR);
+        assert_eq!(from_minor, Triad::new(10, Diminished));
+        assert_eq!(from_minor.pitch_classes(), [10, 1, 4]);
+        assert_eq!(
+            HarmonyMove::StepUp.apply(from_minor, A_MINOR),
+            Triad::new(11, Diminished)
+        );
+        // Lifting a diminished chord keeps climbing in diminished chords.
+        assert_eq!(
+            HarmonyMove::RaiseRoot.apply(lifted, A_MINOR),
+            Triad::new(9, Diminished)
+        );
     }
 
     #[test]

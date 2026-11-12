@@ -1373,6 +1373,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
                 ("m / ,", "3 steps down/up"),
             ],
             &[("h / l", "fifth down/up"), ("a", "home")],
+            &[("o", "raise root a half step (to dim)")],
             &[
                 ("f", "relative"),
                 ("d", "major/minor"),
@@ -1417,9 +1418,24 @@ fn draw_help(f: &mut Frame, inner: Rect) {
 /// titled border over a scrim. Returns the inner content area. It leaves the
 /// footer visible at every terminal size.
 fn leader_frame(f: &mut Frame, inner: Rect, title: &'static str, desired_height: u16) -> Rect {
+    leader_frame_sized(f, inner, title, LEADER_WIDTH, desired_height)
+}
+
+/// The usual leader width; the harmony overlay is wider to fit `o` on its
+/// up-step row at the minimum frame.
+const LEADER_WIDTH: u16 = 38;
+const HARMONY_LEADER_WIDTH: u16 = 42;
+
+fn leader_frame_sized(
+    f: &mut Frame,
+    inner: Rect,
+    title: &'static str,
+    desired_width: u16,
+    desired_height: u16,
+) -> Rect {
     let available_height = inner.height.saturating_sub(1);
     let height = desired_height.min(available_height);
-    let width = 38.min(inner.width.saturating_sub(2));
+    let width = desired_width.min(inner.width.saturating_sub(2));
     let area = Rect::new(
         inner.x + (inner.width.saturating_sub(width)) / 2,
         inner.y + (available_height.saturating_sub(height)) / 2,
@@ -1486,7 +1502,7 @@ fn draw_harmony_leader(f: &mut Frame, inner: Rect, harmony: &HarmonyView, held: 
     } else {
         " Push once "
     };
-    let content = leader_frame(f, inner, title, 8);
+    let content = leader_frame_sized(f, inner, title, HARMONY_LEADER_WIDTH, 8);
     let key_style = Style::default()
         .fg(BROWSE_PALETTE.active)
         .add_modifier(Modifier::BOLD);
@@ -1503,7 +1519,8 @@ fn draw_harmony_leader(f: &mut Frame, inner: Rect, harmony: &HarmonyView, held: 
         ]
     };
     // The step columns read as on a columnar keyboard: above, home, below.
-    let steps = |column: [HarmonyMove; 3]| -> Line<'static> {
+    // The up row ends with `o`, which sits above `l`.
+    let steps = |column: &[HarmonyMove]| -> Line<'static> {
         Line::from(
             column
                 .iter()
@@ -1535,15 +1552,16 @@ fn draw_harmony_leader(f: &mut Frame, inner: Rect, harmony: &HarmonyView, held: 
     ));
     let mut lines = vec![
         Line::from(now),
-        steps([
+        steps(&[
             HarmonyMove::StepDownTwo,
             HarmonyMove::StepDown,
             HarmonyMove::StepDownThree,
         ]),
-        steps([
+        steps(&[
             HarmonyMove::StepUpTwo,
             HarmonyMove::StepUp,
             HarmonyMove::StepUpThree,
+            HarmonyMove::RaiseRoot,
         ]),
     ];
     // Undo and how to close live in the footer, which stays visible.

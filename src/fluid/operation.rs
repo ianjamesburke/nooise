@@ -151,7 +151,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 89] = [
+    pub(crate) const ALL: [Self; 90] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -216,6 +216,7 @@ impl Operation {
         Self::Harmony(HarmonyAction::Move(HarmonyMove::StepDownThree)),
         Self::Harmony(HarmonyAction::Move(HarmonyMove::StepUpTwo)),
         Self::Harmony(HarmonyAction::Move(HarmonyMove::StepUpThree)),
+        Self::Harmony(HarmonyAction::Move(HarmonyMove::RaiseRoot)),
         Self::Harmony(HarmonyAction::Undo),
         Self::HarmonyQuantize(PushQuantize::Beat),
         Self::HarmonyQuantize(PushQuantize::Off),
@@ -390,6 +391,7 @@ impl Operation {
                     HarmonyAction::Move(HarmonyMove::StepDownThree) => "Harmony down 3 steps",
                     HarmonyAction::Move(HarmonyMove::StepUpTwo) => "Harmony up 2 steps",
                     HarmonyAction::Move(HarmonyMove::StepUpThree) => "Harmony up 3 steps",
+                    HarmonyAction::Move(HarmonyMove::RaiseRoot) => "Harmony raise root",
                     HarmonyAction::Undo => "Harmony undo",
                 },
                 aliases: match action {
@@ -413,6 +415,9 @@ impl Operation {
                     HarmonyAction::Move(HarmonyMove::StepDownThree) => &["push m", "down a fourth"],
                     HarmonyAction::Move(HarmonyMove::StepUpTwo) => &["push i", "up a third"],
                     HarmonyAction::Move(HarmonyMove::StepUpThree) => &["push comma", "up a fourth"],
+                    HarmonyAction::Move(HarmonyMove::RaiseRoot) => {
+                        &["push o", "sharp root", "half step up"]
+                    }
                     HarmonyAction::Undo => &["push undo", "push backspace"],
                 },
                 description: match action {

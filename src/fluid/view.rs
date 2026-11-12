@@ -1679,6 +1679,7 @@ mod tests {
                     "m↓3␠iv",
                     "i↑2␠ii°",
                     ",↑3␠III",
+                    "o♯␠#vii°",
                     "l␠lift",
                     "a␠home",
                     "⌫␠undo",
