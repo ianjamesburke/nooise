@@ -72,7 +72,7 @@ move.
 | --- | --- | --- |
 | `u` / `j` / `m` | down 2 / 1 / 3 scale steps | F / G / Em |
 | `i` / `k` / `,` | up 2 / 1 / 3 scale steps | C / Bdim / Dm |
-| `h` / `l` | down / up a fifth | Dm / Em |
+| `h` / `l` | fall / lift: down / up a fifth | Dm / Em |
 | `f` | relative swap (R) | C |
 | `d` | major/minor flip (P) | A |
 | `s` | leading-tone swap (L) | F |

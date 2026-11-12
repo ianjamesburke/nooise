@@ -290,7 +290,9 @@ pub(crate) const HARMONY_MOVES: [HarmonyMoveRow; 13] = [
     HarmonyMoveRow {
         harmony_move: HarmonyMove::FifthDown,
         key: 'h',
-        label: "resolve",
+        // "Fall", not "resolve": a fifth down only resolves from a
+        // dominant; from the tonic it lands on iv, a lift.
+        label: "fall",
     },
     HarmonyMoveRow {
         harmony_move: HarmonyMove::FifthUp,

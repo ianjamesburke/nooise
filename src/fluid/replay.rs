@@ -6231,7 +6231,22 @@ fn the_palette_pushes_the_harmony() {
     trace.push(key(0, FixtureKey::Enter, InputPhase::Press));
     let result = replay_bar(&trace, TerminalCapabilities::full());
     assert_eq!(result.final_owner(), Some("BROWSE"));
-    assert_eq!(queued_harmony(&result), Some(("Em".to_string(), 4.0)));
+    assert_eq!(queued_harmony(&result), Some(("Em".to_string(), 4.0))); // `h` is Fall; the old name Resolve still finds it.
+    for query in ["harmony fall", "harmony resolve"] {
+        let mut trace = vec![key(0, FixtureKey::Character('/'), InputPhase::Press)];
+        trace.extend(
+            query
+                .chars()
+                .map(|character| key(0, FixtureKey::Character(character), InputPhase::Press)),
+        );
+        trace.push(key(0, FixtureKey::Enter, InputPhase::Press));
+        let result = replay_bar(&trace, TerminalCapabilities::full());
+        assert_eq!(
+            queued_harmony(&result),
+            Some(("Dm".to_string(), 4.0)),
+            "{query}"
+        );
+    }
 }
 
 /// By default a push lands on the next beat line: live but in time. Moves

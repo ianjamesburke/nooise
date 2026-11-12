@@ -52,7 +52,7 @@ as one move. Focus loss ends a held push. Ctrl+C still quits.
 | --- | --- | --- |
 | `j` / `u` / `m` | down 1 / 2 / 3 scale steps | G / F / Em |
 | `k` / `i` / `,` | up 1 / 2 / 3 scale steps | Bdim / C / Dm |
-| `h` | down a fifth (resolve) | Dm |
+| `h` | down a fifth (fall; it resolves only from a dominant) | Dm |
 | `l` | up a fifth (lift) | Em |
 | `f` | R, relative swap | C |
 | `d` | P, parallel major/minor flip | A |

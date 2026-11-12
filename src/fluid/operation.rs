@@ -384,7 +384,7 @@ impl Operation {
                 label: match action {
                     HarmonyAction::Move(HarmonyMove::StepDown) => "Harmony step down",
                     HarmonyAction::Move(HarmonyMove::StepUp) => "Harmony step up",
-                    HarmonyAction::Move(HarmonyMove::FifthDown) => "Harmony resolve",
+                    HarmonyAction::Move(HarmonyMove::FifthDown) => "Harmony fall",
                     HarmonyAction::Move(HarmonyMove::FifthUp) => "Harmony lift",
                     HarmonyAction::Move(HarmonyMove::Relative) => "Harmony relative",
                     HarmonyAction::Move(HarmonyMove::Parallel) => "Harmony parallel",
@@ -400,9 +400,13 @@ impl Operation {
                 aliases: match action {
                     HarmonyAction::Move(HarmonyMove::StepDown) => &["push j", "push step down"],
                     HarmonyAction::Move(HarmonyMove::StepUp) => &["push k", "push step up"],
-                    HarmonyAction::Move(HarmonyMove::FifthDown) => {
-                        &["push h", "down a fifth", "push resolve"]
-                    }
+                    HarmonyAction::Move(HarmonyMove::FifthDown) => &[
+                        "push h",
+                        "down a fifth",
+                        "push fall",
+                        "harmony resolve",
+                        "push resolve",
+                    ],
                     HarmonyAction::Move(HarmonyMove::FifthUp) => {
                         &["push l", "up a fifth", "push lift"]
                     }

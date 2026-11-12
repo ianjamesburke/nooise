@@ -1368,7 +1368,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
                 ("u / i", "2 steps down/up"),
                 ("m / ,", "3 steps down/up"),
             ],
-            &[("h / l", "fifth down/up"), ("a", "home")],
+            &[("h / l", "fall / lift a fifth"), ("a", "home")],
             &[("o", "raise root a half step (to dim)")],
             &[
                 ("f", "relative"),
