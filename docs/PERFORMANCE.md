@@ -184,6 +184,15 @@ and auto-morph toggle is on `Shift+A` or `/auto` (`Toggle auto`). Armed or activ
 vamp state persists in song codes (`VAMP_RECORD`) and rebases to the loaded song's
 beat zero. On terminals lacking key-release support, `a` operates as a latching tap.
 
+The vamp overpowers a harmony loop. Pressed while a `G` loop plays, it starts
+from the loop chord sounding (from that chord's onset, on the loop's slot) and
+holds it, while the loop's clock keeps running underneath. Releasing hands
+back on the vamp's release line to the chord the loop has reached by then,
+through the ordinary chord change, so you can step out of a loop on any of its
+chords and back in. A vamp already holding when a loop is grabbed keeps what
+it holds. A latched vamp over a loop saves and loads as such; a state landing
+takes the destination's own loop and vamp, as with any latched vamp.
+
 The Master effects play over the whole mix after Master's module chain, whatever
 page is open. The q gate acts on Kick and Bass before they join the mix. Arrows and Tab remain available while a key is down, and
 different gestures can overlap. Pressing during a return catches it at its

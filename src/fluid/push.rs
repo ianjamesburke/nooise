@@ -283,6 +283,12 @@ impl HarmonyLoop {
             .then(|| (beat - self.start_beat).max(0.0).rem_euclid(self.period()))
     }
 
+    /// The transport beat the loop chord sounding at `beat` began on.
+    pub(crate) fn event_start(&self, beat: f64) -> Option<f64> {
+        let phase = self.phase(beat)?;
+        self.at(beat).map(|event| beat - phase + event.at)
+    }
+
     /// The loop chord sounding at `beat`.
     pub(crate) fn at(&self, beat: f64) -> Option<&HarmonyEvent> {
         let phase = self.phase(beat)?;
@@ -348,11 +354,18 @@ impl PushedHarmony {
     }
 
     /// The pushed or looped chord sounding at `beat`: the loop's, once its
-    /// first pass has started, else the held push.
-    pub(crate) fn sounding(&self, beat: f64) -> Option<HeldChord> {
+    /// first pass has started, else the held push. A vamp active at `beat`
+    /// overpowers the loop: it holds the loop chord sounding when the vamp
+    /// began while the loop's clock runs on underneath, so letting go rejoins
+    /// the loop where it has got to. A vamp that began before the loop holds
+    /// what it held (the push, or the progression's chord).
+    pub(crate) fn sounding(&self, beat: f64, vamp: Option<VampState>) -> Option<HeldChord> {
+        let at = vamp
+            .filter(|vamp| vamp.is_active(beat))
+            .map_or(beat, |vamp| vamp.start_beat);
         self.looping
             .and_then(|looping| {
-                looping.at(beat).map(|event| HeldChord {
+                looping.at(at).map(|event| HeldChord {
                     slot: looping.slot,
                     triad: event.triad,
                     notes: event.notes,
@@ -363,10 +376,10 @@ impl PushedHarmony {
 
     /// The harmony a new move reads at `beat`: the queued chord, else the
     /// loop or held chord sounding, else `authored`, the progression chord.
-    pub(crate) fn base(&self, authored: Triad, beat: f64) -> Triad {
+    pub(crate) fn base(&self, authored: Triad, beat: f64, vamp: Option<VampState>) -> Triad {
         self.queued
             .map(|queued| queued.target)
-            .or(self.sounding(beat).map(|held| held.triad))
+            .or(self.sounding(beat, vamp).map(|held| held.triad))
             .unwrap_or(authored)
     }
 
@@ -419,8 +432,9 @@ impl PushedHarmony {
         key: HomeKey,
         authored: Triad,
         beat: f64,
+        vamp: Option<VampState>,
     ) -> PushOutcome {
-        let target = harmony_move.apply(self.base(authored, beat), key);
+        let target = harmony_move.apply(self.base(authored, beat, vamp), key);
         self.undo.push(self.heading());
         self.queue(target, beat);
         PushOutcome::Queued(target)
@@ -556,16 +570,18 @@ impl PushedHarmony {
 }
 
 impl PushedHarmony {
-    /// Apply one key. `authored` is the progression chord sounding now.
+    /// Apply one key. `authored` is the progression chord sounding now and
+    /// `vamp` the session's vamp, which may be holding a loop chord.
     pub(crate) fn act(
         &mut self,
         action: HarmonyAction,
         key: HomeKey,
         authored: Triad,
         beat: f64,
+        vamp: Option<VampState>,
     ) -> PushOutcome {
         match action {
-            HarmonyAction::Move(harmony_move) => self.push(harmony_move, key, authored, beat),
+            HarmonyAction::Move(harmony_move) => self.push(harmony_move, key, authored, beat, vamp),
             HarmonyAction::Undo => self.undo(beat),
         }
     }
@@ -610,9 +626,9 @@ mod tests {
     #[test]
     fn a_move_queues_for_the_next_bar_and_a_second_composes_from_it() {
         let mut push = bar_push();
-        push.push(HarmonyMove::FifthUp, KEY, am(), 5.5);
+        push.push(HarmonyMove::FifthUp, KEY, am(), 5.5, None);
         assert_eq!(push.queued.unwrap().land_beat, 8.0);
-        push.push(HarmonyMove::FifthUp, KEY, am(), 7.0);
+        push.push(HarmonyMove::FifthUp, KEY, am(), 7.0, None);
         // Two fifths up from A minor: E minor, then B (diminished in A minor).
         assert_eq!(
             target(&push),
@@ -630,13 +646,13 @@ mod tests {
     #[test]
     fn landing_voices_from_the_sounding_notes_and_keeps_the_held_slot() {
         let mut push = bar_push();
-        push.push(HarmonyMove::Relative, KEY, am(), 0.5);
+        push.push(HarmonyMove::Relative, KEY, am(), 0.5, None);
         push.land([45, 48, 52, 57], 3);
         let held = push.held.unwrap();
         assert_eq!((held.slot, held.triad.name(0)), (3, "C".to_string()));
         assert_eq!(held.notes, [43, 48, 52, 55]);
         assert_eq!(push.queued, None);
-        push.push(HarmonyMove::Parallel, KEY, am(), 4.5);
+        push.push(HarmonyMove::Parallel, KEY, am(), 4.5, None);
         push.land(held.notes, 6);
         assert_eq!(push.held.unwrap().slot, 3, "a held chord keeps its slot");
         assert_eq!(push.held.unwrap().triad.name(0), "Cm");
@@ -645,14 +661,14 @@ mod tests {
     #[test]
     fn undo_walks_back_through_pushes_but_never_to_the_progression() {
         let mut push = bar_push();
-        push.push(HarmonyMove::Relative, KEY, am(), 0.5);
+        push.push(HarmonyMove::Relative, KEY, am(), 0.5, None);
         assert_eq!(push.undo(1.0), PushOutcome::Cancelled);
         assert_eq!(push.queued, None);
         assert_eq!(push.undo(1.0), PushOutcome::Nothing);
 
-        push.push(HarmonyMove::Relative, KEY, am(), 0.5);
+        push.push(HarmonyMove::Relative, KEY, am(), 0.5, None);
         push.land([45, 48, 52, 57], 0);
-        push.push(HarmonyMove::FifthUp, KEY, am(), 4.5);
+        push.push(HarmonyMove::FifthUp, KEY, am(), 4.5, None);
         push.land(push.held.unwrap().notes, 0);
         // Back to C; past that the progression is behind us.
         assert_eq!(
@@ -670,7 +686,7 @@ mod tests {
     fn undo_history_is_bounded() {
         let mut push = bar_push();
         for _ in 0..PUSH_UNDO_DEPTH + 5 {
-            push.push(HarmonyMove::FifthUp, KEY, am(), 0.0);
+            push.push(HarmonyMove::FifthUp, KEY, am(), 0.0, None);
         }
         let mut undone = 0;
         while push.undo(0.0) != PushOutcome::Nothing {
@@ -697,14 +713,14 @@ mod tests {
         }
         let mut push = PushedHarmony::default();
         push.set_quantize(PushQuantize::Off, 0.0);
-        push.push(HarmonyMove::Relative, KEY, am(), 5.25);
+        push.push(HarmonyMove::Relative, KEY, am(), 5.25, None);
         assert!(push.is_due(5.25), "off lands on the next sample");
     }
 
     #[test]
     fn changing_the_setting_re_times_a_waiting_move() {
         let mut push = bar_push();
-        push.push(HarmonyMove::Relative, KEY, am(), 5.0);
+        push.push(HarmonyMove::Relative, KEY, am(), 5.0, None);
         push.set_quantize(PushQuantize::FourBars, 6.0);
         assert_eq!(push.queued.unwrap().land_beat, 16.0);
         push.set_quantize(PushQuantize::Off, 7.0);
@@ -715,7 +731,7 @@ mod tests {
     #[test]
     fn a_restart_lands_a_waiting_move_on_bar_one() {
         let mut push = bar_push();
-        push.push(HarmonyMove::Home, KEY, am(), 30.0);
+        push.push(HarmonyMove::Home, KEY, am(), 30.0, None);
         assert_eq!(push.restarted().queued.unwrap().land_beat, 0.0);
     }
 
@@ -734,7 +750,7 @@ mod tests {
     #[test]
     fn a_downbeat_reset_moves_a_waiting_move_to_the_new_grid() {
         let mut push = bar_push();
-        push.push(HarmonyMove::Relative, KEY, am(), 5.5);
+        push.push(HarmonyMove::Relative, KEY, am(), 5.5, None);
         assert_eq!(push.queued.unwrap().land_beat, 8.0);
         // Line 6 is the new beat zero: old 8 is new 2, so the next new bar
         // line is 4. On the beat grid it is due exactly where it was.

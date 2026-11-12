@@ -1327,7 +1327,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
                 ("r", "perc roll"),
             ],
             &[
-                ("a", "chord vamp (hold/tap)"),
+                ("a", "chord vamp (hold/tap), also over a loop"),
                 ("b", "beat repeat (hold / palette)"),
                 ("d", "downbeat (nearest beat is one)"),
             ],

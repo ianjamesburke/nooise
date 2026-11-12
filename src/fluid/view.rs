@@ -373,8 +373,8 @@ impl HarmonyView {
         let write = |triad: Triad| triad.label(labels, key, progression);
         let authored = authored_triad(pad, labels.key, progression, active_slot);
         let push = &session.push;
-        let base = push.base(authored, beat);
-        let sounding = push.sounding(beat);
+        let base = push.base(authored, beat, session.vamp);
+        let sounding = push.sounding(beat, session.vamp);
         Self {
             sounding: sounding.map_or_else(
                 || pad_chord_name(pad, progression, active_slot, labels),
@@ -1654,9 +1654,9 @@ mod tests {
         push.set_quantize(PushQuantize::OneBar, 0.0);
         let key = HomeKey::of(0, MasterKey::of_progression(0));
         let am = Triad::new(9, TriadQuality::Minor);
-        push.push(HarmonyMove::Relative, key, am, 0.5);
+        push.push(HarmonyMove::Relative, key, am, 0.5, None);
         push.land([45, 48, 52, 57], 0);
-        push.push(HarmonyMove::FifthUp, key, am, 1.0);
+        push.push(HarmonyMove::FifthUp, key, am, 1.0, None);
         session.push = push;
         for held in [true, false] {
             let interaction = InteractionModel {

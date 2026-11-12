@@ -289,6 +289,18 @@ fn is_chug_lane(lane: &LfoRoute) -> bool {
         && lane.phase_offset_beats == CHUG_LFO_OFFSET_BEATS
 }
 
+/// Where a new vamp starts and which slot it holds: on a playing harmony
+/// loop, the loop chord sounding now (from the beat it began, on the loop's
+/// slot), which the vamp then holds over the loop; otherwise the progression
+/// chord sounding now.
+fn vamp_start(snapshot: &LiveSessionSnapshot, beat: f64, phrase_start: f64) -> (f64, u8) {
+    snapshot
+        .push
+        .looping
+        .and_then(|looping| looping.event_start(beat).map(|start| (start, looping.slot)))
+        .unwrap_or_else(|| sounding_chord(&snapshot.controls.pad, beat, phrase_start))
+}
+
 impl EffectExecutor {
     pub(crate) fn new(session: LiveSession, auto: AutoControls) -> Self {
         Self::seeded(session, auto, rand::random())
@@ -921,7 +933,7 @@ impl EffectExecutor {
                         let authored = pad_chord_tones(pad, key, progression, slot);
                         let sounding = snapshot
                             .push
-                            .sounding(beat)
+                            .sounding(beat, snapshot.vamp)
                             .map_or(authored, |held| held.notes);
                         if snapshot.push.heard.iter().next().is_none() {
                             // What sounded before the first landing, as the
@@ -1317,10 +1329,13 @@ impl EffectExecutor {
             let authored = authored_triad(pad, labels.key, progression, slot);
             write = Some((labels, HomeKey::of_song(&snapshot.controls), progression));
             quantize = snapshot.push.quantize;
-            outcome =
-                snapshot
-                    .push
-                    .act(action, HomeKey::of_song(&snapshot.controls), authored, beat);
+            outcome = snapshot.push.act(
+                action,
+                HomeKey::of_song(&snapshot.controls),
+                authored,
+                beat,
+                snapshot.vamp,
+            );
         });
         let when = match quantize.grid_beats() {
             None => String::new(),
@@ -1357,7 +1372,7 @@ impl EffectExecutor {
         let phrase_start = self.session.audio_phrase_start();
         let mut grabbed = None;
         let snapshot = self.session.update(|snapshot| {
-            let slot = snapshot.push.sounding(beat).map_or_else(
+            let slot = snapshot.push.sounding(beat, snapshot.vamp).map_or_else(
                 || sounding_chord(&snapshot.controls.pad, beat, phrase_start).1,
                 |held| held.slot,
             );
@@ -2535,8 +2550,7 @@ impl EffectExecutor {
                             message = "Chord vamp kept".to_string();
                         }
                     } else {
-                        let (start_beat, slot) =
-                            sounding_chord(&snapshot.controls.pad, beat, phrase_start);
+                        let (start_beat, slot) = vamp_start(snapshot, beat, phrase_start);
                         snapshot.vamp = Some(VampState::start(start_beat, slot));
                         snapshot.vamp_press_seconds = Some(now_seconds);
                         snapshot.vamp_latched = false;
@@ -2617,8 +2631,7 @@ impl EffectExecutor {
                             message = "Chord vamp kept".to_string();
                         }
                     } else {
-                        let (start_beat, slot) =
-                            sounding_chord(&snapshot.controls.pad, beat, phrase_start);
+                        let (start_beat, slot) = vamp_start(snapshot, beat, phrase_start);
                         snapshot.vamp = Some(VampState::start(start_beat, slot));
                         snapshot.vamp_press_seconds = None;
                         snapshot.vamp_latched = true;

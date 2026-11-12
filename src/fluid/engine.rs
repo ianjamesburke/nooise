@@ -21,6 +21,8 @@ mod downbeat_tests;
 mod gesture_audio;
 #[cfg(test)]
 mod perf_probe;
+#[cfg(test)]
+mod vamp_loop_tests;
 
 use gesture_audio::GestureAudioBank;
 
@@ -771,7 +773,7 @@ impl FluidEngine {
             initial_pad.chord_count = 1.0;
             initial_pad.chord_offset = f32::from(vamp.slot);
         }
-        if let Some(held) = live.push.sounding(0.0) {
+        if let Some(held) = live.push.sounding(0.0, live.vamp) {
             initial_pad.chord_count = 1.0;
             initial_pad.chord_offset = f32::from(held.slot);
             initial_pad.held_chord = Some(held);
@@ -1208,7 +1210,7 @@ impl StereoEngine for FluidEngine {
         }
         // A pushed chord overrides the progression the way a held vamp does:
         // every chord follower stays on its slot and reads the pushed notes.
-        let sounding = self.push.sounding(timing.beat);
+        let sounding = self.push.sounding(timing.beat, self.vamp);
         self.effective.pad.held_chord = sounding;
         if let Some(held) = sounding {
             self.effective.pad.chord_count = 1.0;
@@ -1525,7 +1527,7 @@ impl FluidEngine {
             window.count = 1;
             window.offset = usize::from(vamp.slot);
         }
-        if let Some(held) = self.push.sounding(self.tempo.beat) {
+        if let Some(held) = self.push.sounding(self.tempo.beat, self.vamp) {
             window.count = 1;
             window.offset = usize::from(held.slot);
         }
