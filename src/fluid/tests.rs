@@ -1647,7 +1647,7 @@ fn morph_landing_first_kick_and_bass_notes_are_as_audible_as_held_notes() {
         controls.pad.chord_count = 1.0;
         controls.pad.level = 0.0;
         (spec_by_id(tab.level_id().unwrap()).unwrap().set)(&mut controls, 0.8);
-        controls.kick.interval_beats = 1.0;
+        // The default Kick hits on every beat: steps 1 and 5 at 0.25 beats.
         let morph = Arc::new(ArcSwap::from_pointee(Some(MorphState::new(
             vec![SongState::from_controls(controls.clone())],
             3,
@@ -3539,7 +3539,7 @@ fn envelope_lane_shows_negative_amount_rising_from_below_neutral() {
         amount: -0.5,
         attack_beats: 0.0,
         decay_beats: 1.0,
-        trigger: EnvTrigger::OnKick,
+        trigger: EnvTrigger::EveryBeats(1.0),
     };
     let heights = |amount| {
         let route = EnvelopeRoute {
@@ -7685,11 +7685,7 @@ fn lfo_shape(shape: LfoShape) -> LfoRoute {
 }
 
 fn env_ctx(beat: f64) -> ModContext {
-    ModContext {
-        beat,
-        kick_interval_beats: 1.0,
-        kick_offset_beats: 0.0,
-    }
+    ModContext { beat }
 }
 
 #[test]
@@ -8123,23 +8119,43 @@ fn envelope_every_n_beats_retriggers() {
 }
 
 #[test]
-fn envelope_on_kick_tracks_the_kick_grid() {
-    let env = EnvelopeRoute {
-        enabled: true,
-        amount: 1.0,
-        attack_beats: 0.0,
-        decay_beats: 1.0,
-        trigger: EnvTrigger::OnKick,
-    };
-    let ctx = |beat: f64| ModContext {
-        beat,
-        kick_interval_beats: 2.0,
-        kick_offset_beats: 0.0,
-    };
-    // Kicks land on beats 0, 2, 4, ...; the one-shot peaks right at each hit.
-    assert_near(env.level_at(ctx(2.0)), 1.0);
-    assert_near(env.level_at(ctx(2.5)), 0.5);
-    assert_near(env.level_at(ctx(4.0)), 1.0);
+fn fresh_kick_and_clap_play_beats_and_backbeats_on_a_sixteenth_grid() {
+    let controls = FluidControls::default();
+    assert_eq!(
+        (controls.kick.interval_beats, controls.kick.step_count),
+        (0.25, 8.0)
+    );
+    assert_eq!(
+        (controls.clap.interval_beats, controls.clap.step_count),
+        (0.25, 8.0)
+    );
+    let telemetry = Arc::new(FluidTelemetry::default());
+    let mut kick = KickEngine::new(2_000.0, Arc::clone(&telemetry));
+    let mut clap = ClapEngine::with_telemetry(2_000.0, Arc::clone(&telemetry));
+    let (mut kicks, mut claps) = (Vec::new(), Vec::new());
+    let mut beat = 0.0;
+    while beat < 3.9 {
+        let k = telemetry.kick_pulse.load(Ordering::Relaxed);
+        let c = telemetry.hits[MusicalHit::Clap as usize]
+            .pulse
+            .load(Ordering::Relaxed);
+        let timing = TimingContext::new(2_000.0, 120.0, beat);
+        kick.next(&controls.kick, timing);
+        clap.next(&controls.clap, timing);
+        if telemetry.kick_pulse.load(Ordering::Relaxed) != k {
+            kicks.push((beat * 4.0).round() / 4.0);
+        }
+        if telemetry.hits[MusicalHit::Clap as usize]
+            .pulse
+            .load(Ordering::Relaxed)
+            != c
+        {
+            claps.push((beat * 4.0).round() / 4.0);
+        }
+        beat += 120.0 / (60.0 * 2_000.0);
+    }
+    assert_eq!(kicks, vec![0.0, 1.0, 2.0, 3.0], "four on the floor");
+    assert_eq!(claps, vec![1.0, 3.0], "beats 2 and 4");
 }
 
 #[test]
@@ -8177,7 +8193,7 @@ fn close_editor_preserves_zero_amount_envelope() {
         enabled: true,
         attack_beats: 0.75,
         decay_beats: 2.5,
-        trigger: EnvTrigger::OnKick,
+        trigger: EnvTrigger::Once,
         ..EnvelopeRoute::default()
     };
     *automation.open_or_create_envelope(address) = authored;
@@ -8379,7 +8395,7 @@ fn silent_lfo_and_envelope_render_the_same_as_no_automation() {
     let address = ControlAddress::new("master.level");
     let mut neutral = AutomationState::default();
     neutral.open_or_create(address).shape = LfoShape::Steps;
-    neutral.open_or_create_envelope(address).trigger = EnvTrigger::OnKick;
+    neutral.open_or_create_envelope(address).trigger = EnvTrigger::Once;
     neutral.close_editor();
     let mut dry = engine_for(FluidControls::default(), AutomationState::default());
     let mut silent = engine_for(FluidControls::default(), neutral);
@@ -9043,7 +9059,7 @@ fn song_code_round_trips_envelope_routes() {
             amount: 0.6,
             attack_beats: 1.5,
             decay_beats: 3.0,
-            trigger: EnvTrigger::OnKick,
+            trigger: EnvTrigger::Once,
             enabled: true,
         },
     );
@@ -9062,7 +9078,7 @@ fn song_code_round_trips_envelope_routes() {
     assert_quantized(env.amount, 0.6);
     assert_close(env.attack_beats, 1.5);
     assert_close(env.decay_beats, 3.0);
-    assert_eq!(env.trigger, EnvTrigger::OnKick);
+    assert_eq!(env.trigger, EnvTrigger::Once);
 }
 
 #[test]

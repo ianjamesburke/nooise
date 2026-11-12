@@ -18,13 +18,10 @@ pub(crate) fn kick_step_label(value: f32) -> &'static str {
     }
 }
 
+/// Kick plays its stored steps, as Clap does: selecting a preset seeds them,
+/// and a song keeps the steps it was saved with.
 pub(crate) fn kick_authored_steps(c: &KickControls) -> [f32; KICK_STEP_COUNT] {
-    let index = (c.pattern.round() as isize).clamp(0, CUSTOM_KICK_PATTERN_INDEX as isize) as usize;
-    if index < KICK_PATTERN_PRESET_COUNT {
-        KICK_PATTERN_PRESETS[index].1
-    } else {
-        c.steps
-    }
+    c.steps
 }
 
 pub(crate) struct KickEngine {
@@ -801,6 +798,8 @@ mod tests {
             level: 1.0,
             interval_beats: 0.5,
             swing: 1.0,
+            pattern: CUSTOM_KICK_PATTERN_INDEX as f32,
+            steps: [1.0; KICK_STEP_COUNT],
             ..KickControls::default()
         };
 

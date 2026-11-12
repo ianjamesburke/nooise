@@ -17,6 +17,7 @@ pub(crate) enum Operation {
     ToggleVamp,
     ToggleKickBass,
     ToggleBeatRepeat,
+    ResetDownbeat,
     ChordNames(ChordNames),
     ClearSequence,
     State(StateAction),
@@ -148,7 +149,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 87] = [
+    pub(crate) const ALL: [Self; 88] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -175,6 +176,7 @@ impl Operation {
         Self::ToggleVamp,
         Self::ToggleKickBass,
         Self::ToggleBeatRepeat,
+        Self::ResetDownbeat,
         Self::ChordNames(ChordNames::Roman),
         Self::ChordNames(ChordNames::Letters),
         Self::ClearSequence,
@@ -340,6 +342,12 @@ impl Operation {
                 aliases: &["repeat", "beat repeat", "stutter"],
                 description: "loop the current beat of live audio; Escape releases",
             },
+            Self::ResetDownbeat => OperationSpec {
+                operation: self,
+                label: "Reset downbeat",
+                aliases: &["downbeat", "beat one", "bar one", "realign beat"],
+                description: "make the next beat beat one of the bar; tempo and chord stay",
+            },
             Self::State(action) => OperationSpec {
                 operation: self,
                 label: match action {
@@ -496,6 +504,7 @@ impl Operation {
             | Self::ToggleVamp
             | Self::ToggleKickBass
             | Self::ToggleBeatRepeat
+            | Self::ResetDownbeat
             | Self::ToggleAuto => None,
         }
     }

@@ -414,7 +414,11 @@ pub(crate) const CUSTOM_KICK_PATTERN_INDEX: usize = 4;
 
 pub(crate) const KICK_PATTERNS: &[&str] = &["Steady", "Offbeat", "Broken", "Groove", "Custom"];
 
-pub(crate) const DEFAULT_KICK_STEPS: [f32; KICK_STEP_COUNT] = [1.0; KICK_STEP_COUNT];
+/// Steps 1 and 5 of eight at 0.25 beats: a kick on every beat, editable at
+/// sixteenth resolution. Saved songs keep their own baseline (`song.rs`).
+pub(crate) const DEFAULT_KICK_STEPS: [f32; KICK_STEP_COUNT] = [
+    1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+];
 
 /// Built-in Kick pattern presets (`Steady`, `Offbeat`, `Broken`, `Groove`).
 pub(crate) const KICK_PATTERN_PRESETS: [(u8, [f32; KICK_STEP_COUNT]); KICK_PATTERN_PRESET_COUNT] = [
@@ -466,7 +470,7 @@ impl Default for KickControls {
             amp_decay_ms: 150.0,
             click: 0.02,
             pattern: 0.0,
-            interval_beats: 1.0,
+            interval_beats: 0.25,
             offset_beats: 0.0,
             step_count: 8.0,
             evolve_rate: 0.0,

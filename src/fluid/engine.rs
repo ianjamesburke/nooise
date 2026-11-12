@@ -16,6 +16,8 @@ use crate::fx::reverb::{FdnReverb, ReverbParams};
 
 use super::*;
 
+#[cfg(test)]
+mod downbeat_tests;
 mod gesture_audio;
 #[cfg(test)]
 mod perf_probe;
@@ -723,6 +725,9 @@ pub(crate) struct FluidEngine {
     drunken_phase_beat: f64,
     transport: Transport,
     transport_restart: u64,
+    downbeat_reset: u64,
+    /// The beat line a requested downbeat reset waits for.
+    downbeat_line: Option<f64>,
     /// A stopped launch must not sound continuous voices or age the saved state.
     awaiting_initial_play: bool,
     /// Allocation-free per-sample plan, rebuilt only when aggregate
@@ -855,6 +860,8 @@ impl FluidEngine {
             drunken_phase_beat: live.drunken_phase_beat,
             transport: live.transport,
             transport_restart: live.transport_restart,
+            downbeat_reset: live.downbeat_reset,
+            downbeat_line: None,
             awaiting_initial_play: live.transport == Transport::Stopped,
             plan,
             observed: live,
@@ -865,14 +872,63 @@ impl FluidEngine {
     /// Rewind musical schedulers while release envelopes and effect tails keep running.
     fn restart_sequence(&mut self) {
         self.tempo.restart();
+        self.downbeat_line = None;
         self.vamp_active = false;
         self.vamp_landed_beat = None;
         self.vamp_landed_at = None;
         self.morph_writer = MorphWriter::default();
         self.morph
             .rcu(|current| current.as_ref().as_ref().map(MorphState::restarted));
-        self.beat_trigger = GridTrigger::new();
         self.bass.progression = ProgressionFollower::new();
+        self.tonal.progression = ProgressionFollower::new();
+        self.arp.progression = ProgressionFollower::new();
+        self.lead.progression = ProgressionFollower::new();
+        self.rewind_grids();
+    }
+
+    /// Downbeat reset on the beat line `line`, reached on this sample: it
+    /// becomes beat zero of bar one. Tempo and beat phase are unchanged, so
+    /// the bars rotate by whole beats. The chord sounding on the line keeps
+    /// ringing and restarts its count (a chord due on the line arrives on
+    /// beat zero), so the harmonic timeline (chord cursors, the auto morph, a
+    /// vamp) moves back by that chord's start. Every grid and step sequencer
+    /// starts again at step 1. Session state stamped on the old clock moves
+    /// in the same transaction: Motion loops restart, pushed harmony moves
+    /// to the new clock (`PushedHarmony::reanchored`), and `downbeat_applied`/`downbeat_shift` tell the UI to move its own.
+    fn reanchor_downbeat(&mut self, line: f64) {
+        let shift = self.pad.cursor.restart_at_line(line);
+        for follower in [
+            &mut self.bass.progression,
+            &mut self.tonal.progression,
+            &mut self.arp.progression,
+            &mut self.lead.progression,
+        ] {
+            if let Some(cursor) = &mut follower.cursor {
+                cursor.restart_at_line(line);
+            }
+        }
+        // The line is reached within one sample, so beat zero is exact to it.
+        self.tempo.restart();
+        self.vamp_landed_beat = self.vamp_landed_beat.map(|beat| beat - shift);
+        self.vamp_landed_at = self.vamp_landed_at.map(|beat| beat - shift);
+        self.morph_writer = MorphWriter::default();
+        self.morph
+            .rcu(|current| current.as_ref().as_ref().map(|morph| morph.rebased(shift)));
+        self.session.update(|snapshot| {
+            snapshot.vamp = snapshot.vamp.map(|vamp| vamp.rebased_at(shift));
+            snapshot.automation.restart();
+            snapshot.push = snapshot.push.reanchored(line);
+            snapshot.downbeat_applied = snapshot.downbeat_applied.wrapping_add(1);
+            snapshot.downbeat_shift = line;
+        });
+        self.observe_published();
+        self.push = self.session.load().push;
+        self.rewind_grids();
+    }
+
+    /// Every voice grid, step position and evolution cycle starts over.
+    fn rewind_grids(&mut self) {
+        self.beat_trigger = GridTrigger::new();
         self.bass.step_trigger = GridTrigger::new();
         self.bass.last_cycle = None;
         self.perc.trigger = GridTrigger::new();
@@ -881,17 +937,14 @@ impl FluidEngine {
         self.kick.last_cycle = None;
         self.clap.trigger = GridTrigger::new();
         self.clap.last_cycle = None;
-        self.tonal.progression = ProgressionFollower::new();
         self.tonal.step_trigger = GridTrigger::new();
         self.tonal.step_index = 0;
         self.tonal.last_cycle = None;
-        self.arp.progression = ProgressionFollower::new();
         self.arp.note_trigger = GridTrigger::new();
         self.arp.cycle_pos = 0;
         self.arp.ping_pong_dir = 1;
         self.arp.step_index = 0;
         self.arp.last_cycle = None;
-        self.lead.progression = ProgressionFollower::new();
         self.lead.step_trigger = GridTrigger::new();
         self.lead.last_cycle = None;
     }
@@ -1019,6 +1072,23 @@ impl StereoEngine for FluidEngine {
             self.transport_restart = self.observed.transport_restart;
             self.restart_sequence();
         }
+        // A requested reset waits for the next beat line, so the beat phase
+        // never moves. A restart already starts at bar one, so it absorbs a
+        // reset requested in the same generation.
+        if self.observed_unapplied && self.downbeat_reset != self.observed.downbeat_reset {
+            self.downbeat_reset = self.observed.downbeat_reset;
+            if !restarting {
+                self.downbeat_line = Some((self.tempo.beat - GRID_BEAT_EPSILON).ceil());
+            }
+        }
+        let reanchoring = self.transport == Transport::Playing
+            && self
+                .downbeat_line
+                .is_some_and(|line| self.tempo.beat + GRID_BEAT_EPSILON >= line);
+        if let Some(line) = self.downbeat_line.filter(|_| reanchoring) {
+            self.downbeat_line = None;
+            self.reanchor_downbeat(line);
+        }
         // ~2.9 ms at 44.1 kHz: the clock and the auto morph advance on this
         // cadence; session state is applied on change, never polled.
         let morph_boundary = self
@@ -1027,7 +1097,12 @@ impl StereoEngine for FluidEngine {
             .as_ref()
             .as_ref()
             .is_some_and(|morph| self.morph_writer.boundary_due(morph, self.tempo.beat));
-        if self.current_sample.is_multiple_of(128) || morph_boundary || landed || restarting {
+        if self.current_sample.is_multiple_of(128)
+            || morph_boundary
+            || landed
+            || restarting
+            || reanchoring
+        {
             self.session.publish_audio_beat(self.tempo.beat);
             self.session
                 .publish_audio_phrase_start(self.pad.cursor.phrase_start_beat());

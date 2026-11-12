@@ -8,7 +8,7 @@ Durable product direction and architecture decisions.
 
 - `NORTH_STAR.md` owns product vision and the video-game posture (moves, high skill ceiling, eyes-closed play), the computer keyboard's priority, optional external-gear boundaries, song snapshots versus performance documents and rig configuration, the ban on bundled samples with allowance for live audio processing, and passthrough defaults for new effects and modulation recipes.
 - `PERFORMANCE.md` owns state-bank performance (nine numbered states and the `'` go and `"` keep leaders), Push the Harmony (Space held), go/keep/grab (`'`, `"`, `g`), hub navigation, normal-mode gestures, the clock
-  stop, phase contracts, and manual audio smoke.
+  stop, the downbeat reset, phase contracts, and manual audio smoke.
 - `adr/` owns architecture decisions and their status (Accepted or Proposed). See `adr/AGENTS.md`.
 - `proposals/` owns feature designs and their decision status. See `proposals/AGENTS.md`.
 - `superpowers/` contains ignored local planning artifacts; it is not shipped.

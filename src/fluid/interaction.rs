@@ -1246,6 +1246,8 @@ pub(crate) enum Intent {
     },
     /// Stop the beat clock so tails ring out, or start it again.
     ToggleTransport,
+    /// Make this moment beat one of bar one without stopping the clock.
+    ResetDownbeat,
     RemoveAutomation,
     /// Roll the automation editor row under the cursor: one field, one step,
     /// or the parent control; a random shape's Shape row rerolls its seed.
@@ -1354,7 +1356,9 @@ impl Intent {
             | Self::ChooseState(_)
             | Self::PreviousState
             | Self::PushHarmony(_) => &[ModeKind::Performance],
-            Self::OpenStateLeader(_) | Self::OpenHarmony { .. } => &[ModeKind::Browsing],
+            Self::OpenStateLeader(_) | Self::OpenHarmony { .. } | Self::ResetDownbeat => {
+                &[ModeKind::Browsing]
+            }
             Self::OpenGrab { .. } => &[ModeKind::Browsing, ModeKind::Automation],
         }
     }
@@ -1422,6 +1426,7 @@ impl Intent {
             | Self::ToggleUnits
             | Self::ToggleMute { .. }
             | Self::ToggleTransport
+            | Self::ResetDownbeat
             | Self::RemoveAutomation
             | Self::RandomizeAutomationRow
             | Self::RandomizeSelected
@@ -1541,6 +1546,8 @@ pub(crate) enum InteractionEffect {
     /// Reset the active sequence steps on `Tab` (Pads to root, notes to rest).
     ClearSequence(Tab),
     ToggleTransport,
+    /// Re-anchor bar one on the next audio sample; see `EffectExecutor::reset_downbeat`.
+    ResetDownbeat,
     RemoveAutomation,
     RandomizeAutomationRow,
     RandomizeSelected,
@@ -2059,6 +2066,7 @@ fn update_browsing(
             navigation.mute_target()
         })),
         Intent::ToggleTransport => effects.push(InteractionEffect::ToggleTransport),
+        Intent::ResetDownbeat => effects.push(InteractionEffect::ResetDownbeat),
         Intent::RemoveAutomation => effects.push(InteractionEffect::RemoveAutomation),
         Intent::RandomizeAutomationRow => effects.push(InteractionEffect::RandomizeAutomationRow),
         Intent::RandomizeSelected => effects.push(InteractionEffect::RandomizeSelected),
@@ -2528,6 +2536,7 @@ fn palette_after_confirm(entry: &PaletteEntry, palette: &PaletteMode) -> Interac
                 || *operation == Operation::ToggleVamp
                 || *operation == Operation::ToggleKickBass
                 || *operation == Operation::ToggleBeatRepeat
+                || *operation == Operation::ResetDownbeat
     ) || (palette.editor_motion_target.is_some()
         && matches!(entry, PaletteEntry::Operation(Operation::Motion(action)) if editor_motion_action(*action, palette)))
         || (palette.resume.is_some()
@@ -2638,6 +2647,7 @@ fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionE
         Operation::ToggleVamp => InteractionEffect::ToggleVamp,
         Operation::ToggleKickBass => InteractionEffect::ToggleKickBass,
         Operation::ToggleBeatRepeat => InteractionEffect::ToggleBeatRepeat,
+        Operation::ResetDownbeat => InteractionEffect::ResetDownbeat,
         Operation::State(action) => InteractionEffect::State(action),
         Operation::Harmony(action) => InteractionEffect::Harmony(action),
         Operation::HarmonyQuantize(quantize) => InteractionEffect::SetHarmonyQuantize(quantize),

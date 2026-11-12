@@ -237,6 +237,7 @@ enum ModulePlacement {
 pub(crate) struct EffectExecutor {
     bank: Result<states::StateBank, states::StateError>,
     seen_state_revision: u64,
+    seen_downbeat: u64,
     output_routing: Option<audio::OutputRouting>,
     session: LiveSession,
     auto: AutoControls,
@@ -271,6 +272,7 @@ impl EffectExecutor {
         Self {
             bank: states::StateBank::open(None),
             seen_state_revision: 0,
+            seen_downbeat: 0,
             output_routing: None,
             session,
             auto,
@@ -433,6 +435,20 @@ impl EffectExecutor {
         if self.seen_state_revision != revision {
             self.seen_state_revision = revision;
             self.pending = None;
+            self.capture_history = CaptureHistory::default();
+            self.phrase = LeadPhraseBuffer::default();
+        }
+        // A downbeat reset moved the clock back by whole beats: staged edits
+        // wait for the first new bar line at or after their old one, and the
+        // beat-stamped live histories clear, as after Shift+P.
+        let session = self.session.load();
+        if self.seen_downbeat != session.downbeat_applied {
+            self.seen_downbeat = session.downbeat_applied;
+            let shift = session.downbeat_shift;
+            if let Some((beat, _)) = &mut self.pending {
+                *beat = ((*beat - shift) / 4.0).ceil().max(0.0) * 4.0;
+            }
+            self.edit_beat = 0.0;
             self.capture_history = CaptureHistory::default();
             self.phrase = LeadPhraseBuffer::default();
         }
@@ -1403,6 +1419,25 @@ impl EffectExecutor {
         }
     }
 
+    /// Make the next beat line beat one of bar one. Like the transport it is
+    /// an overlay on the song, not an edit: auto, MRU and tempo are untouched.
+    /// This only requests it; the audio engine applies it on the line
+    /// (`FluidEngine::reanchor_downbeat`), and `poll_output_routing` moves
+    /// the executor's own beat-stamped state once it has.
+    pub(crate) fn reset_downbeat(&mut self) -> EffectAcknowledgement {
+        if self.session.load().transport == Transport::Stopped {
+            self.show_message("Clock stopped: Shift+P starts at bar one".to_string());
+            return EffectAcknowledgement::NoChange;
+        }
+        let snapshot = self.session.update(|snapshot| {
+            snapshot.downbeat_reset = snapshot.downbeat_reset.wrapping_add(1);
+        });
+        self.show_message("Downbeat: bar one on the next beat".to_string());
+        EffectAcknowledgement::Published {
+            generation: snapshot.generation,
+        }
+    }
+
     pub(crate) fn stop_transport(&mut self) {
         self.session
             .update(|snapshot| snapshot.transport = Transport::Stopped);
@@ -1689,6 +1724,7 @@ impl EffectExecutor {
             | InteractionEffect::ToggleUnits
             | InteractionEffect::ToggleMute(_)
             | InteractionEffect::ToggleTransport
+            | InteractionEffect::ResetDownbeat
             | InteractionEffect::RemoveAutomation
             | InteractionEffect::RandomizeAutomationRow
             | InteractionEffect::RandomizeSelected
@@ -1845,6 +1881,7 @@ impl EffectExecutor {
                 self.toggle_transport();
                 Ok(self.published())
             }
+            InteractionEffect::ResetDownbeat => Ok(self.reset_downbeat()),
             InteractionEffect::RemoveAutomation => self.with_automation(|executor, automation| {
                 remove_automation_effect(
                     executor,

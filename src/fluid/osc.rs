@@ -7,6 +7,19 @@
 //! socket as OSC bundles. The audio thread never blocks on network I/O, and an
 //! absent, slow, or dead consumer can never back-pressure playback.
 //!
+//! Rates: `/nooise/beat` is a clock that consumers schedule from, never a
+//! meter. baton advances bars and expires voice gates on it (`hub.rs`
+//! `handle_nooise`), expires Take 5 note-offs and drives its MIDI looper on it
+//! (`adapters/take5.rs` `clock`, `advance_clock`), and replays lane loops on it
+//! (`adapters/looper.rs`). It goes out on change at the 5 ms poll and must not
+//! be rate-limited, as must hits, chords, phrases, and voice notes. The beat
+//! jumps back to zero, without a stop, on a transport restart, a state landing,
+//! and a downbeat reset (`d`, which lands on a beat line, so it is a whole-beat
+//! bar renumber with the beat phase kept); consumers must treat a lower beat
+//! as a new timeline, not as time running backwards. Level and
+//! gesture meters are only displayed (foorm samples them per 33 ms frame) or
+//! folded into baton's energy, so they go out on change at about 30 Hz.
+//!
 //! Inbound: an optional UDP listener parses `/nooise/cmd/*` packets into
 //! semantic UI commands (`OscUiCommand`, drained on the coordinator turn loop)
 //! and low-latency voice note commands (`OscVoiceCommand`, drained on the
@@ -179,8 +192,7 @@ fn hit_addr(hit: MusicalHit) -> &'static str {
 }
 
 /// How often the emitter samples telemetry and state. Beat, hits, chords,
-/// phrases, and voice notes go out at this rate: consumers clock note-offs
-/// and loop playback off `/nooise/beat`.
+/// phrases, and voice notes go out at this rate (see the module rates note).
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
 /// How often level and gesture meters go out (about 30 Hz): consumers only
 /// display them or derive energy from them.
@@ -1443,6 +1455,65 @@ mod tests {
             vec![OscType::Float(0.75), OscType::Float(-1.0)]
         );
         assert!(mirrored.diff(&telemetry, true).is_empty());
+    }
+
+    /// Emitter message rates for a built-in song: every poll's diff with
+    /// meters on every poll (the former behaviour) versus on the meter poll.
+    /// `cargo test --release osc_message_rate_probe -- --ignored --nocapture`
+    #[test]
+    #[ignore = "rate probe; run with --nocapture"]
+    fn osc_message_rate_probe() {
+        use crate::audio::StereoEngine;
+        use crate::fluid::auto::{decode_auto_states, no_morph};
+        use crate::fluid::engine::FluidEngine;
+        use crate::fluid::session::{LiveSession, LiveSessionSnapshot};
+        const RATE: f64 = 44_100.0;
+        let seconds = 30.0;
+        let poll = (RATE * POLL_INTERVAL.as_secs_f64()) as usize;
+        let meter_polls =
+            (METER_INTERVAL.as_secs_f64() / POLL_INTERVAL.as_secs_f64()).ceil() as usize;
+        for (index, song) in decode_auto_states().iter().enumerate().take(3) {
+            let mut counts = [[0usize; 3]; 2];
+            for (variant, every) in [1, meter_polls].into_iter().enumerate() {
+                let telemetry = Arc::new(FluidTelemetry::default());
+                let mut engine = FluidEngine::new(
+                    RATE as f32,
+                    LiveSession::new(LiveSessionSnapshot::from_song(song)),
+                    no_morph(),
+                    Arc::clone(&telemetry),
+                );
+                let mut mirrored = Mirrored::from(&telemetry);
+                for p in 0..(seconds * 1000.0 / 5.0) as usize {
+                    for _ in 0..poll {
+                        engine.next_stereo();
+                    }
+                    for message in mirrored.diff(&telemetry, p % every == 0) {
+                        let class = if message.addr == ADDR_BEAT {
+                            0
+                        } else if message.addr == ADDR_LEVEL
+                            || message.addr.ends_with("/level")
+                            || message.addr.starts_with("/nooise/gesture/")
+                        {
+                            1
+                        } else {
+                            2
+                        };
+                        counts[variant][class] += 1;
+                    }
+                }
+            }
+            let per_s = |n: usize| n as f64 / seconds;
+            println!(
+                "song {}: meters {:.0}/s -> {:.0}/s, beat {:.0}/s -> {:.0}/s, other {:.0}/s -> {:.0}/s",
+                index + 1,
+                per_s(counts[0][1]),
+                per_s(counts[1][1]),
+                per_s(counts[0][0]),
+                per_s(counts[1][0]),
+                per_s(counts[0][2]),
+                per_s(counts[1][2]),
+            );
+        }
     }
 
     #[test]

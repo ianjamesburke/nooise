@@ -296,27 +296,18 @@ pub(crate) enum ModKind {
 }
 
 /// Sampling context shared by every modulator so the UI marker and the engine
-/// value come from the same math. `kick_*` describe the live kick grid, which
-/// the on-kick envelope trigger reconstructs deterministically.
+/// value come from the same math.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ModContext {
     pub(crate) beat: f64,
-    pub(crate) kick_interval_beats: f32,
-    pub(crate) kick_offset_beats: f32,
 }
 
 impl ModContext {
-    /// Context for an LFO-only evaluation; the kick fields are unused because
-    /// no LFO shape depends on the kick grid.
-    #[cfg(test)]
-    pub(crate) fn lfo_only(beat: f64) -> Self {
-        Self {
-            beat,
-            kick_interval_beats: 1.0,
-            kick_offset_beats: 0.0,
-        }
+    pub(crate) fn at(beat: f64) -> Self {
+        Self { beat }
     }
 }
+
 pub(crate) fn stepped_index(index: usize, dir: f32, len: usize) -> usize {
     let next = index as i64 + i64::from(dir.signum() as i32);
     next.clamp(0, len.saturating_sub(1) as i64) as usize
@@ -1031,7 +1022,7 @@ pub(crate) fn modulated_control_value(
         std::slice::from_ref(route),
         &[],
         base,
-        ModContext::lfo_only(beat),
+        ModContext::at(beat),
     )
 }
 
@@ -1194,11 +1185,7 @@ impl AutomationPlan {
             self.coefficient = (1.0 - (-1.0 / samples).exp()) as f32;
         }
         controls.pad.begin_chord_evaluation();
-        let ctx = ModContext {
-            beat: timing.beat,
-            kick_interval_beats: controls.kick.interval_beats,
-            kick_offset_beats: controls.kick.offset_beats,
-        };
+        let ctx = ModContext::at(timing.beat);
         for planned in &mut self.routes {
             if planned.finished {
                 continue;

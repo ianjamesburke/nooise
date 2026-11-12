@@ -652,6 +652,9 @@ fn browsing_binding(code: &PhysicalKey) -> Option<Intent> {
         // glyph some terminals send) grabs the pushed harmony.
         PhysicalKey::Character('g') => Intent::OpenGrab { harmony: false },
         PhysicalKey::Character('G') => Intent::OpenGrab { harmony: true },
+        // Downbeat: the left middle finger's home key, so the move that sets
+        // the timing reference is played eyes-closed on the beat.
+        PhysicalKey::Character('d') => Intent::ResetDownbeat,
         PhysicalKey::BackTab => Intent::ChangePage(PageDirection::Previous),
         PhysicalKey::Enter => Intent::TouchSelected,
         _ => return slider_binding(code),

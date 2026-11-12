@@ -1906,6 +1906,30 @@ impl ProgressionCursor {
         self.span
     }
 
+    /// Downbeat reset on beat `line`, which becomes transport beat zero. The
+    /// chord sounding there starts its count again at zero, on the same step
+    /// and window, so no chord is skipped or re-struck. A chord due on the
+    /// line itself still arrives, on the new beat zero. Returns the beat that
+    /// chord starts on in the old clock: how far the harmonic timeline moves.
+    pub(crate) fn restart_at_line(&mut self, line: f64) -> f64 {
+        let interval = GridSpec::new(self.chord_beats, 0.0, 0.0).interval_beats;
+        let shift = match self.next_chord_beat {
+            Some(next) if next <= line + GRID_BEAT_EPSILON => {
+                self.next_chord_beat = Some(next - line);
+                next
+            }
+            Some(next) => {
+                self.next_chord_beat = Some(interval);
+                next - interval
+            }
+            // Not ticked yet: the first chord began at beat zero.
+            None => 0.0,
+        };
+        self.morph_phrase_start = self.morph_phrase_start.map(|phrase| phrase - shift);
+        self.span = self.compute_span();
+        shift
+    }
+
     /// Start of the sounding phrase, for a live auto toggle after chord edits.
     pub(crate) fn phrase_start_beat(&self) -> f64 {
         self.next_chord_beat.map_or(0.0, |next| {

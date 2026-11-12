@@ -176,6 +176,15 @@ impl HeardLog {
     pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = &HarmonyEvent> {
         (0..self.len).map(move |offset| &self.events[(self.head + offset) % HEARD_CAPACITY])
     }
+
+    /// Re-stamp every onset on a clock whose beat zero is old beat `line`,
+    /// so a later grab still reads what was heard with its real timing.
+    fn shifted(mut self, line: f64) -> Self {
+        for event in &mut self.events[..] {
+            event.at -= line;
+        }
+        self
+    }
 }
 
 /// A harmony loop: the chords heard over the last 1, 2, 4 or 8 bars with
@@ -456,6 +465,32 @@ impl PushedHarmony {
         self
     }
 
+    /// A downbeat reset made old beat `line` beat zero. A waiting move lands
+    /// on the first line of its grid at or after where it was due. A loop
+    /// treats its sounding chord as the progression treats its own: it rings
+    /// on and starts its count over on the line, so the pass carries on from
+    /// that chord; a loop not yet started begins on the first new bar line
+    /// at or after its old start. The heard log moves to the new clock.
+    pub(crate) fn reanchored(mut self, line: f64) -> Self {
+        let next_line =
+            |beat: f64, grid: f64| ((beat / grid) - GRID_BEAT_EPSILON).ceil().max(0.0) * grid;
+        if let Some(queued) = &mut self.queued {
+            let due = queued.land_beat - line;
+            queued.land_beat = self
+                .quantize
+                .grid_beats()
+                .map_or(due.max(0.0), |grid| next_line(due, grid));
+        }
+        if let Some(looping) = &mut self.looping {
+            looping.start_beat = match looping.at(line) {
+                Some(event) => -event.at,
+                None => next_line(looping.start_beat - line, 4.0),
+            };
+        }
+        self.heard = self.heard.shifted(line);
+        self
+    }
+
     /// A restart begins at bar one, so a waiting move lands there and a loop
     /// starts its pass there. The heard log's beats no longer apply.
     pub(crate) fn restarted(mut self) -> Self {
@@ -624,5 +659,65 @@ mod tests {
         let mut push = bar_push();
         push.push(HarmonyMove::Home, KEY, am(), 30.0);
         assert_eq!(push.restarted().queued.unwrap().land_beat, 0.0);
+    }
+
+    fn heard(changes: &[(f64, Triad)]) -> HeardLog {
+        let mut log = HeardLog::default();
+        for &(at, triad) in changes {
+            log.record(HarmonyEvent {
+                at,
+                triad,
+                notes: [triad.root(); 4],
+            });
+        }
+        log
+    }
+
+    #[test]
+    fn a_downbeat_reset_moves_a_waiting_move_to_the_new_grid() {
+        let mut push = bar_push();
+        push.push(HarmonyMove::Relative, KEY, am(), 5.5);
+        assert_eq!(push.queued.unwrap().land_beat, 8.0);
+        // Line 6 is the new beat zero: old 8 is new 2, so the next new bar
+        // line is 4. On the beat grid it is due exactly where it was.
+        assert_eq!(push.reanchored(6.0).queued.unwrap().land_beat, 4.0);
+        push.set_quantize(PushQuantize::Beat, 5.5);
+        assert_eq!(push.reanchored(6.0).queued.unwrap().land_beat, 0.0);
+    }
+
+    #[test]
+    fn a_downbeat_reset_keeps_the_loop_chord_sounding_and_restarts_its_count() {
+        let f = Triad::new(5, TriadQuality::Major);
+        let g = Triad::new(7, TriadQuality::Major);
+        // One bar: Am for two beats, F, then G, looping from beat 8.
+        let log = heard(&[(4.0, am()), (6.0, f), (7.0, g)]);
+        let mut push = PushedHarmony::default();
+        push.start_loop(HarmonyLoop::grab(&log, 1, 8.0, 0).unwrap());
+        // Old beat 13 is a pass's beat 1, inside Am.
+        let moved = push.reanchored(13.0);
+        let looping = moved.looping.unwrap();
+        assert_eq!(looping.at(0.0).unwrap().triad, am(), "Am rings on");
+        assert_eq!(looping.at(1.99).unwrap().triad, am(), "for its full count");
+        assert_eq!(looping.at(2.0).unwrap().triad, f);
+        assert_eq!(looping.at(3.0).unwrap().triad, g);
+        assert_eq!(looping.at(4.0).unwrap().triad, am(), "the pass is intact");
+        // The heard log reads on the new clock.
+        let onsets: Vec<f64> = moved.heard.iter().map(|event| event.at).collect();
+        assert!(onsets.is_empty(), "start_loop does not log");
+        let mut logged = PushedHarmony {
+            heard: log,
+            ..PushedHarmony::default()
+        };
+        logged = logged.reanchored(5.0);
+        let onsets: Vec<f64> = logged.heard.iter().map(|event| event.at).collect();
+        assert_eq!(onsets, vec![-1.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn a_loop_not_yet_started_begins_on_the_first_new_bar_line_after_its_start() {
+        let log = heard(&[(4.0, am())]);
+        let mut push = PushedHarmony::default();
+        push.start_loop(HarmonyLoop::grab(&log, 1, 8.0, 0).unwrap());
+        assert_eq!(push.reanchored(6.0).looping.unwrap().start_beat, 4.0);
     }
 }

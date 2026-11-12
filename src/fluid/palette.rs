@@ -142,6 +142,7 @@ impl PaletteEntry {
                 Operation::ToggleVamp => "chord vamp".to_string(),
                 Operation::ToggleKickBass => "kick and bass".to_string(),
                 Operation::ToggleBeatRepeat => "live beat".to_string(),
+                Operation::ResetDownbeat => "beat clock".to_string(),
                 Operation::ChordNames(_) => "display".to_string(),
                 Operation::OutputDevice => "routing".to_string(),
                 Operation::State(_) => "state bank".to_string(),

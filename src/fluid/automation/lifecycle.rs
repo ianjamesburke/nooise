@@ -271,7 +271,7 @@ mod tests {
                 automation.lfo_lanes(address),
                 automation.envelope_lanes(address),
                 0.4,
-                ModContext::lfo_only(3.0),
+                ModContext::at(3.0),
             );
             assert!(
                 (resumed - expected).abs() < 0.0001,

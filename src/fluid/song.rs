@@ -21,11 +21,11 @@ use super::{
     AutomationState, CHORD_SLOT_COUNT, CLAP_STEP_COUNT, CUSTOM_TONAL_PHRASE_INDEX, ControlAddress,
     ControlKind, ControlSpec, DEFAULT_LFO_DEPTH_RATIO, EditorMotionAddress, EditorMotionField,
     EnvField, EnvTrigger, EnvelopeRoute, FluidControls, GESTURE_COUNT, GestureEnvelope,
-    GestureKind, GestureState, LfoField, LfoRoute, LfoShape, MAX_AUTOMATION_LANES_PER_KIND,
-    MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS, MAX_LFO_CYCLE_BEATS, MAX_LFO_OFFSET_BEATS,
-    MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MUTE_BYTES, ModKind, ModuleSlotField, MuteState,
-    RampParams, Step, StepTarget, TAB_COUNT, Tab, VampState, all_specs, parse_module_slot_id,
-    spec_by_id,
+    GestureKind, GestureState, KICK_STEP_COUNT, LfoField, LfoRoute, LfoShape,
+    MAX_AUTOMATION_LANES_PER_KIND, MAX_ENV_ATTACK_BEATS, MAX_ENV_DECAY_BEATS, MAX_LFO_CYCLE_BEATS,
+    MAX_LFO_OFFSET_BEATS, MAX_LFO_STEPS, MIN_LFO_CYCLE_BEATS, MUTE_BYTES, ModKind, ModuleSlotField,
+    MuteState, RampParams, Step, StepTarget, TAB_COUNT, Tab, VampState, all_specs,
+    parse_module_slot_id, spec_by_id,
 };
 
 const MAGIC: &[u8; 4] = b"NOOI";
@@ -95,7 +95,9 @@ const LFO_SHAPE_TAGS: [(LfoShape, u8); 6] = [
 /// reused; a code naming one is refused rather than loaded as another shape.
 const RETIRED_LFO_SHAPE_TAGS: [u8; 3] = [1, 2, 3];
 const ENV_TRIGGER_EVERY_BEATS: u8 = 0;
-const ENV_TRIGGER_ON_KICK: u8 = 1;
+/// The retired On Kick envelope trigger. Its tag is never reused; a code
+/// carrying it is refused rather than loaded with another trigger.
+const RETIRED_ENV_TRIGGER_ON_KICK: u8 = 1;
 const ENV_TRIGGER_ONCE: u8 = 2;
 /// Fallback `EveryBeats` interval for an envelope whose stored trigger param
 /// is non-finite; matches `EnvTrigger`'s own "every 4 beats" default.
@@ -470,6 +472,8 @@ fn decode_container(reader: &mut Reader) -> Result<(SongState, u16), SongCodeErr
     song.controls.clap.interval_beats = 2.0;
     song.controls.clap.offset_beats = 1.0;
     song.controls.clap.steps = [1.0; CLAP_STEP_COUNT];
+    song.controls.kick.interval_beats = 1.0;
+    song.controls.kick.steps = [1.0; KICK_STEP_COUNT];
     let mut gesture_record_seen = false;
     let mut drunken_phase_record_seen = false;
     let mut capture_record_seen = false;
@@ -2026,6 +2030,8 @@ fn write_snapshot(controls: &FluidControls, out: &mut Vec<u8>) -> Result<(), Son
     defaults.clap.interval_beats = 2.0;
     defaults.clap.offset_beats = 1.0;
     defaults.clap.steps = [1.0; CLAP_STEP_COUNT];
+    defaults.kick.interval_beats = 1.0;
+    defaults.kick.steps = [1.0; KICK_STEP_COUNT];
     defaults.tonal.apply_phrase_preset(controls.tonal.phrase);
     defaults.tonal.phrase = 0.0;
     defaults.arp.apply_pattern_preset(controls.arp.pattern);
@@ -2037,6 +2043,9 @@ fn write_snapshot(controls: &FluidControls, out: &mut Vec<u8>) -> Result<(), Son
     defaults.perc.apply_pattern_preset(controls.perc.pattern);
     defaults.perc.pattern = 0.0;
     defaults.kick.apply_pattern_preset(controls.kick.pattern);
+    if controls.kick.pattern == 0.0 {
+        defaults.kick.steps = [1.0; KICK_STEP_COUNT];
+    }
     defaults.kick.pattern = 0.0;
     defaults.clap.apply_pattern_preset(controls.clap.pattern);
     if controls.clap.pattern == 0.0 {
@@ -2125,6 +2134,9 @@ fn read_snapshot(bytes: &[u8], controls: &mut FluidControls) -> Result<(), SongC
                 // step entries below carry the current authored pattern.
                 if spec.id == "clap.pattern" && controls.clap.pattern == 0.0 {
                     controls.clap.steps = [1.0; CLAP_STEP_COUNT];
+                }
+                if spec.id == "kick.pattern" && controls.kick.pattern == 0.0 {
+                    controls.kick.steps = [1.0; KICK_STEP_COUNT];
                 }
             } else if !structural {
                 reject_retired_control(index)?;
@@ -2263,6 +2275,9 @@ fn read_automation(bytes: &[u8], automation: &mut AutomationState) -> Result<(),
         let decay_beats = reader.f32()?;
         let trigger_tag = reader.u8()?;
         let trigger_param = reader.f32()?;
+        if trigger_tag == RETIRED_ENV_TRIGGER_ON_KICK {
+            return Err(SongCodeError::RetiredControl("on kick envelope trigger"));
+        }
 
         reject_retired_control(index)?;
         let (Some(spec), Some(trigger)) = (
@@ -2324,7 +2339,6 @@ fn build_lfo_route(
 fn env_trigger_tag(trigger: EnvTrigger) -> (u8, f32) {
     match trigger {
         EnvTrigger::EveryBeats(beats) => (ENV_TRIGGER_EVERY_BEATS, beats),
-        EnvTrigger::OnKick => (ENV_TRIGGER_ON_KICK, 0.0),
         EnvTrigger::Once => (ENV_TRIGGER_ONCE, 0.0),
     }
 }
@@ -2332,7 +2346,6 @@ fn env_trigger_tag(trigger: EnvTrigger) -> (u8, f32) {
 fn env_trigger_from_tag(tag: u8, param: f32) -> Option<EnvTrigger> {
     match tag {
         ENV_TRIGGER_EVERY_BEATS => Some(EnvTrigger::EveryBeats(param)),
-        ENV_TRIGGER_ON_KICK => Some(EnvTrigger::OnKick),
         ENV_TRIGGER_ONCE => Some(EnvTrigger::Once),
         _ => None,
     }
@@ -2768,7 +2781,9 @@ mod gesture_record_tests {
             "gesture record added {} chars",
             code.len() - base_len
         );
-        assert!(code.len() < 200, "default song must remain compact");
+        // Fresh Clap and Kick defaults differ from the historical snapshot
+        // baseline (rate plus step entries each), which a default song pays.
+        assert!(code.len() < 260, "default song must remain compact");
     }
 }
 
@@ -2824,6 +2839,29 @@ mod retired_control_tests {
                 Some(SongCodeError::RetiredControl("triangle/ramp lfo shape"))
             );
         }
+    }
+
+    /// The On Kick envelope trigger is retired; a saved envelope naming it is
+    /// refused rather than loaded with another trigger.
+    #[test]
+    fn an_envelope_with_the_retired_on_kick_trigger_is_refused() {
+        let mut automation = AutomationState::default();
+        automation.add_envelope(
+            ControlAddress::new("master.level"),
+            EnvelopeRoute::default(),
+        );
+        let mut lanes = Vec::new();
+        write_automation(&automation, &mut lanes).unwrap();
+        // No LFOs: lfo count, legacy section, envelope count (u16 each),
+        // then control u16, amount u16, attack f32, decay f32, trigger tag.
+        let tag_at = 2 + 2 + 2 + 2 + 2 + 4 + 4;
+        assert_eq!(lanes[tag_at], ENV_TRIGGER_EVERY_BEATS);
+        lanes[tag_at] = RETIRED_ENV_TRIGGER_ON_KICK;
+        let code = code_from_records(CONTAINER_VERSION, &[(AUTOMATION_RECORD, &lanes)]);
+        assert_eq!(
+            decode_song_code(&code).err(),
+            Some(SongCodeError::RetiredControl("on kick envelope trigger"))
+        );
     }
 
     /// Master Key replaced Tune outright: a saved semitone offset has no key
@@ -3102,6 +3140,33 @@ mod song_value_tests {
         assert_eq!(again.controls.clap.steps, decoded.controls.clap.steps);
     }
 
+    use super::super::{CUSTOM_KICK_PATTERN_INDEX, DEFAULT_CLAP_STEPS, DEFAULT_KICK_STEPS};
+
+    #[test]
+    fn omitted_kick_snapshot_fields_keep_the_original_rhythm() {
+        let code = code_from_records(CONTAINER_VERSION, &[]);
+        let decoded = decode_song_code(&code).unwrap();
+        assert_eq!(decoded.controls.kick.interval_beats, 1.0);
+        assert_eq!(decoded.controls.kick.steps, [1.0; KICK_STEP_COUNT]);
+        let again = decode_song_code(&encode_song_code(&decoded).unwrap()).unwrap();
+        assert_eq!(again.controls.kick.steps, decoded.controls.kick.steps);
+        assert_eq!(again.controls.kick.interval_beats, 1.0);
+    }
+
+    #[test]
+    fn kick_steps_round_trip_under_every_pattern() {
+        // Steps that equal the fresh default must still be written, whatever
+        // the pattern, because a decoder starts from the historical baseline.
+        let mut song = SongState::default();
+        for pattern in [0.0, 1.0, CUSTOM_KICK_PATTERN_INDEX as f32] {
+            song.controls.kick.pattern = pattern;
+            song.controls.kick.steps = DEFAULT_KICK_STEPS;
+            let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+            assert_eq!(decoded.controls.kick.steps, DEFAULT_KICK_STEPS, "{pattern}");
+            assert_eq!(decoded.controls.kick.interval_beats, 0.25);
+        }
+    }
+
     #[test]
     fn fresh_defaults_and_historical_song_baselines_round_trip() {
         let mut song = SongState::default();
@@ -3110,6 +3175,10 @@ mod song_value_tests {
         let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
         assert_eq!(decoded.controls.perc.level, 0.0);
         assert_eq!(decoded.controls.bass.voice_type, 1.0);
+        assert_eq!(decoded.controls.kick.interval_beats, 0.25);
+        assert_eq!(decoded.controls.kick.steps, DEFAULT_KICK_STEPS);
+        assert_eq!(decoded.controls.clap.interval_beats, 0.25);
+        assert_eq!(decoded.controls.clap.steps, DEFAULT_CLAP_STEPS);
         song.controls.perc.level = 0.0;
         song.controls.bass.voice_type = 0.0;
         let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();

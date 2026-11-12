@@ -273,6 +273,44 @@ untouched, like mute.
 A song code never carries the stopped state. A stopped song is silence,
 not a state worth sharing, so a loaded code always plays.
 
+## Downbeat reset
+
+When the grid stops matching the beat you feel, press `d` just before the
+beat you feel as one, or use `/downbeat` (also `reset downbeat`, `beat one`,
+`bar one`). The next beat line becomes beat one of bar one. The beat itself
+never moves: the tempo and the beat phase stay the same, and only the bar
+numbering rotates by whole beats. Nothing jumps mid-beat. It works from
+browsing on every terminal, as a press edge with no key-release support
+needed. Pressing again before the line changes nothing.
+
+- Harmony: the chord sounding on the line rings on without being struck
+  again and starts its count over, so the next chord arrives one full chord
+  after the line. No chord is skipped. A chord that was due on the line
+  arrives on it, as beat one. A Vamp keeps its chord the same way.
+- Rhythm: every grid and step sequencer starts again at step 1 on the line,
+  so the Kick's first step hits there. Tonal, Arp and Lead patterns restart,
+  and LFO phases follow the new bar.
+- Queued state: it still lands at the end of the phrase. The phrase is
+  measured from the restarted chord, so the countdown grows by however much
+  of that chord had already played.
+- Push the Harmony: a waiting move lands on the first line of its quantize
+  grid at or after where it was due. A harmony loop treats its sounding chord
+  like the progression does: it rings on, starts its count over on the line,
+  and the loop carries on from there. `G` still grabs what was heard with
+  its real timing.
+- Motion loops restart from their first sample on the line. Live edit history
+  and Lead phrase history clear, as they do after Shift+P.
+- Beat Repeat: a held loop keeps its captured beat and stays on the beat,
+  since the line is a beat line. A hold that has not started looping yet
+  begins one beat later.
+- Auto: the morph keeps going, moved back with the restarted chord, so its
+  phrases stay on the chords. Pressing `d` doesn't count as an edit, so auto
+  keeps running.
+
+While the clock is stopped, `d` only shows a message, because Shift+P already
+starts at bar one. Song codes never carry a reset. It only moves the live
+clock, and a loaded code always starts at beat zero anyway.
+
 ## Master Mode
 
 The Master page has Key (the existing Master Key) and Mode: Home (the
@@ -410,6 +448,11 @@ Lead play retains its own `i` entry and existing bindings.
    `'` overlay and recall as stored. Check both overlays at 46x11.
 12. Edit the set file to start a line with `A`: relaunch shows the refusal at
    launch and the song plays.
+13. With Kick audible, tap `d` just before a beat that is not the bar's first:
+   that beat becomes beat one, with no stumble in the pulse. The chord keeps
+   ringing with no re-attack, and the ribbon restarts that chord's first
+   measure. Queue a state, tap `d` mid-phrase: the `in N bars` countdown
+   grows, and the landing falls on the new grid's phrase end.
 
 13. On song 1 (A minor), hold Space and tap `f`: C fades in at once over
    the pad Attack, exactly like the progression's own chord changes, with

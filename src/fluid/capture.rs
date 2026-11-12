@@ -1082,7 +1082,7 @@ mod tests {
             .automation
             .envelope_mut(address)
             .unwrap()
-            .set_field(EnvField::Trigger, 7.0);
+            .set_field(EnvField::Trigger, 6.0);
         history.record_changes(&before, &snapshot, 0.5, None);
         let shape = EditorMotionAddress {
             control: address,
@@ -1396,7 +1396,7 @@ mod tests {
             automation.lfo_lanes(address),
             &[],
             0.2,
-            ModContext::lfo_only(0.0),
+            ModContext::at(0.0),
         );
         assert!((controls.pad.level - expected).abs() < 0.0001);
         automation.captures.get_mut(&address).unwrap().enabled = false;
@@ -1413,7 +1413,7 @@ mod tests {
             automation.lfo_lanes(address),
             &[],
             0.7,
-            ModContext::lfo_only(0.0),
+            ModContext::at(0.0),
         );
         assert!((controls.pad.level - expected).abs() < 0.0001);
     }

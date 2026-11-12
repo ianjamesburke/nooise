@@ -136,11 +136,7 @@ pub(crate) fn render(f: &mut Frame, view: &UiViewModel<'_>) {
             },
             cursor_visible: view.cursor_visible,
         },
-        mod_ctx: ModContext {
-            beat: view.telemetry.beat,
-            kick_interval_beats: controls.kick.interval_beats,
-            kick_offset_beats: controls.kick.offset_beats,
-        },
+        mod_ctx: ModContext::at(view.telemetry.beat),
         active_slot: active_vamp.map_or(view.telemetry.active_chord as usize, |vamp| {
             usize::from(vamp.slot)
         }),
@@ -1337,6 +1333,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
             &[
                 ("a", "chord vamp (hold/tap)"),
                 ("b", "beat repeat (hold / palette)"),
+                ("d", "downbeat (next beat is one)"),
             ],
         ],
     ));
@@ -2159,11 +2156,7 @@ mod motion_render_tests {
                 entry: None,
                 cursor_visible: true,
             },
-            mod_ctx: ModContext {
-                beat: 3.0,
-                kick_interval_beats: 1.0,
-                kick_offset_beats: 0.0,
-            },
+            mod_ctx: ModContext { beat: 3.0 },
             active_slot: 0,
             bar_w: 12,
         });
