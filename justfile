@@ -1,15 +1,19 @@
+# Cargo builds share PLEXI's machine-wide permit pool (~/.plexi/cargo-build.lock*)
+# so nooise and PLEXI builds together stay within the CPU/RAM budget.
+lease := "bash " + home_directory() + "/Documents/GitHub/PLEXI/scripts/cargo-with-lease.sh"
+
 # Launch the fluid TUI/audio engine
 fluid:
     cargo run
 
 # Run all tests
 test:
-    cargo test
+    {{lease}} cargo test
     python3 -m unittest scripts.test_add_morph
 
 # Lint all targets
 check:
-    cargo clippy --all-targets
+    {{lease}} cargo clippy --all-targets
 
 # Render a reproducible wav without audio hardware
 render out="nooise.wav" seed="7":
@@ -21,7 +25,7 @@ bench seconds="60" seed="42":
     bash scripts/bench_render.sh {{seconds}} {{seed}}
 
 install:
-    cargo install --path . --locked
+    {{lease}} cargo install --path . --locked
 
 # Append a song code (from Ctrl+S in a live session) to the built-in
 # auto-morph cycle in src/fluid/auto.rs, verify it decodes, and commit it.
