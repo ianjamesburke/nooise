@@ -14,6 +14,9 @@ Accepted ADR is a contract.
 - `0002-v3-chord-model.md` (Accepted; Stage 1 implemented) owns the separation
   of chord harmony, voicing, and rhythm, the gate-aware common-tone rule, and
   the chord payload and migration contracts.
+- `0003-master-output-stage.md` (Accepted) owns the fixed output makeup, the
+  -1 dBFS lookahead limiter that replaced the 0.95 clamp, and their loudness
+  targets and verification.
 
 ## Local Contracts
 

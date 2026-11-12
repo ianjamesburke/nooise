@@ -110,7 +110,7 @@ All feature work lands in a worktree, never in the root checkout. The root check
 - `src/`: all engine, UI, and control code. See `src/AGENTS.md`. Built-in auto-morph song codes (the ordered `n1_…` cycle) live in `src/fluid/auto.rs`'s `AUTO_STATES` array, all container v2 — test-enforced, since only the current container version decodes. Use `just add-morph <code>` to append one. It requires a clean target file, rejects duplicates, restores the file after failed checks, and commits only the new state; never hand-paste codes into the array.
 - `assets/`: static wordmark/preview images, no code, no local rules needed.
 - `docs/NORTH_STAR.md`: product vision and feature-evaluation commandments.
-- `docs/adr/`: durable architecture decisions; ADR 0001 owns the interaction-kernel and terminal-runtime contracts, ADR 0002 (Accepted, landing in stages) the v3 chord model.
+- `docs/adr/`: durable architecture decisions; ADR 0001 owns the interaction-kernel and terminal-runtime contracts, ADR 0002 (Accepted, landing in stages) the v3 chord model, ADR 0003 the Master output stage (makeup and limiter).
 - `docs/superpowers/`: local brainstorming specs and plans produced by the superpowers skill workflow; ignored by git and not part of the shipped crate.
 - `.stint/`: local sprint/task tracking tool state, not part of the shipped crate.
 - `ROADMAP.md`: local V2/V3 roadmap (git-ignored); orders the stint tasks, each stint stays the source of truth.
