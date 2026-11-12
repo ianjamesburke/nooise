@@ -1369,7 +1369,7 @@ fn draw_help(f: &mut Frame, inner: Rect) {
                 ("m / ,", "3 steps down/up"),
             ],
             &[("h / l", "fall / lift a fifth"), ("a", "home")],
-            &[("o", "raise root a half step (to dim)")],
+            &[("o", "lean: root up a half step (to dim)")],
             &[
                 ("f", "relative"),
                 ("d", "major/minor"),
@@ -1418,8 +1418,8 @@ fn leader_frame(f: &mut Frame, inner: Rect, title: &'static str, desired_height:
     leader_frame_sized(f, inner, title, LEADER_WIDTH, desired_height)
 }
 
-/// The usual leader width; the harmony overlay is wider to fit `o` on its
-/// up-step row at the minimum frame.
+/// The usual leader width; the harmony overlay is wider to fit three moves
+/// on its fifths row at the minimum frame.
 const LEADER_WIDTH: u16 = 38;
 const HARMONY_LEADER_WIDTH: u16 = 42;
 
@@ -1506,17 +1506,16 @@ fn draw_harmony_leader(f: &mut Frame, inner: Rect, harmony: &HarmonyView, held: 
     let label_style = Style::default().fg(Color::Rgb(205, 210, 222));
     let chord_style = Style::default().fg(LIVE_AMBER).add_modifier(Modifier::BOLD);
     let index_of = |harmony_move: HarmonyMove| harmony_move as usize;
-    let half = |harmony_move: HarmonyMove| -> Vec<Span<'static>> {
+    let entry = |harmony_move: HarmonyMove, label_width: usize| -> Vec<Span<'static>> {
         let index = index_of(harmony_move);
         let row = &HARMONY_MOVES[index];
         vec![
             Span::styled(format!("{} ", row.key), key_style),
-            Span::styled(format!("{:<10}", row.label), label_style),
+            Span::styled(format!("{:<label_width$}", row.label), label_style),
             Span::styled(format!("{:<6}", harmony.previews[index]), chord_style),
         ]
     };
     // The step columns read as on a columnar keyboard: above, home, below.
-    // The up row ends with `o`, which sits above `l`.
     let steps = |column: &[HarmonyMove]| -> Line<'static> {
         Line::from(
             column
@@ -1558,17 +1557,27 @@ fn draw_harmony_leader(f: &mut Frame, inner: Rect, harmony: &HarmonyView, held: 
             HarmonyMove::StepUpTwo,
             HarmonyMove::StepUp,
             HarmonyMove::StepUpThree,
-            HarmonyMove::RaiseRoot,
         ]),
+        // The fifths and `o` (above `l`): three four-letter words, which is
+        // what fits all three on one row at the minimum frame.
+        Line::from(
+            [
+                HarmonyMove::FifthDown,
+                HarmonyMove::FifthUp,
+                HarmonyMove::Lean,
+            ]
+            .into_iter()
+            .flat_map(|harmony_move| entry(harmony_move, 5))
+            .collect::<Vec<_>>(),
+        ),
     ];
     // Undo and how to close live in the footer, which stays visible.
     lines.extend(
         [
-            (HarmonyMove::FifthDown, HarmonyMove::FifthUp),
             (HarmonyMove::Relative, HarmonyMove::Parallel),
             (HarmonyMove::LeadingTone, HarmonyMove::Home),
         ]
-        .map(|(left, right)| Line::from([half(left), half(right)].concat())),
+        .map(|(left, right)| Line::from([entry(left, 10), entry(right, 10)].concat())),
     );
     f.render_widget(Paragraph::new(lines).alignment(Alignment::Left), content);
 }

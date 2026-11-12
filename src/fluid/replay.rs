@@ -6250,12 +6250,12 @@ fn the_palette_pushes_the_harmony() {
 }
 
 /// By default a push lands on the next beat line: live but in time. Moves
-/// Space-held `o` raises the root a half step to a diminished chord, and
+/// Space-held `o` (lean) raises the root a half step to a diminished chord, and
 /// a step up after it resolves: from Drift's A minor, A#dim (written Bbdim
 /// and bii°) then Bdim, and
 /// `/push o` reaches the same move.
 #[test]
-fn o_raises_the_root_and_a_step_up_resolves_it() {
+fn o_leans_and_a_step_up_resolves_it() {
     let press = |character| key(0, FixtureKey::Character(character), InputPhase::Press);
     let lifted = replay(
         &[space(InputPhase::Press), press('o')],
@@ -6271,11 +6271,17 @@ fn o_raises_the_root_and_a_step_up_resolves_it() {
     );
     assert_eq!(queued_harmony(&resolved), Some(("Bdim".to_string(), 1.0)));
 
-    let mut trace = vec![press('/')];
-    trace.extend("push o".chars().map(press));
-    trace.push(key(0, FixtureKey::Enter, InputPhase::Press));
-    let palette = replay(&trace, TerminalCapabilities::full());
-    assert_eq!(queued_harmony(&palette), Some(("Bbdim".to_string(), 1.0)));
+    for query in ["push o", "harmony lean"] {
+        let mut trace = vec![press('/')];
+        trace.extend(query.chars().map(press));
+        trace.push(key(0, FixtureKey::Enter, InputPhase::Press));
+        let palette = replay(&trace, TerminalCapabilities::full());
+        assert_eq!(
+            queued_harmony(&palette),
+            Some(("Bbdim".to_string(), 1.0)),
+            "{query}"
+        );
+    }
 }
 
 /// before that beat compose, and the header shows no bar countdown.

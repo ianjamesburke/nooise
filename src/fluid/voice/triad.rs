@@ -257,10 +257,10 @@ pub(crate) enum HarmonyMove {
     StepDownThree,
     StepUpTwo,
     StepUpThree,
-    /// Raise the root a half step to a diminished triad: from a major chord
-    /// only the root moves (G B D to G# B D), the vii° of the chord a step
-    /// up, so the next step up resolves it (G, G#dim, Am: a rising bass).
-    RaiseRoot,
+    /// Lean: the root a half step up, to a diminished triad. From a major
+    /// chord only the root moves (G B D to G# B D), the vii° of the chord a
+    /// step up, so the next step up resolves it (G, G#dim, Am: a rising bass).
+    Lean,
 }
 
 /// One move, the key that plays it, and the overlay's word for it. The step
@@ -340,9 +340,9 @@ pub(crate) const HARMONY_MOVES: [HarmonyMoveRow; 13] = [
         label: "↑3",
     },
     HarmonyMoveRow {
-        harmony_move: HarmonyMove::RaiseRoot,
+        harmony_move: HarmonyMove::Lean,
         key: 'o',
-        label: "♯",
+        label: "lean",
     },
 ];
 
@@ -390,7 +390,7 @@ impl HarmonyMove {
                 TriadQuality::Diminished => Triad::new(root - 4, TriadQuality::Major),
             },
             Self::Home => key.tonic_triad(),
-            Self::RaiseRoot => Triad::new(root + 1, TriadQuality::Diminished),
+            Self::Lean => Triad::new(root + 1, TriadQuality::Diminished),
         }
     }
 }
@@ -689,7 +689,7 @@ mod tests {
     fn raising_the_root_is_a_rising_bass_that_a_step_up_resolves() {
         use TriadQuality::{Diminished, Major};
         let g = Triad::new(7, Major);
-        let lifted = HarmonyMove::RaiseRoot.apply(g, A_MINOR);
+        let lifted = HarmonyMove::Lean.apply(g, A_MINOR);
         assert_eq!(lifted, Triad::new(8, Diminished), "G to G#dim");
         assert_eq!(A_MINOR.roman(lifted), "#vii°");
         assert_eq!(
@@ -709,7 +709,7 @@ mod tests {
         // From a minor chord the root and the minor third both rise: Am
         // (A C E) to A#dim (A# C# E), the vii° of B, and a step up lands on
         // the scale's own chord there (Bdim in A minor).
-        let from_minor = HarmonyMove::RaiseRoot.apply(am(), A_MINOR);
+        let from_minor = HarmonyMove::Lean.apply(am(), A_MINOR);
         assert_eq!(from_minor, Triad::new(10, Diminished));
         assert_eq!(from_minor.pitch_classes(), [10, 1, 4]);
         assert_eq!(
@@ -718,7 +718,7 @@ mod tests {
         );
         // Lifting a diminished chord keeps climbing in diminished chords.
         assert_eq!(
-            HarmonyMove::RaiseRoot.apply(lifted, A_MINOR),
+            HarmonyMove::Lean.apply(lifted, A_MINOR),
             Triad::new(9, Diminished)
         );
     }

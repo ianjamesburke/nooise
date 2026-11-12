@@ -77,20 +77,20 @@ move.
 | `d` | major/minor flip (P) | A |
 | `s` | leading-tone swap (L) | F |
 | `a` | home: the key's tonic | Am |
-| `o` | raise the root a half step, to diminished | Bbdim |
+| `o` | lean: the root a half step up, to diminished | Bbdim |
 | Backspace | undo the last move (16 deep) | |
 
 The step keys sit in columns: on a columnar keyboard the key above or below
 `j` and `k` is a bigger step the same way.
 
-`o`, above `l`, is a rising bass: it raises the chord's root a half step and
+`o` (lean), above `l`, is a rising bass: it raises the chord's root a half step and
 makes it diminished, the vii° of the chord a step up, and `k` then resolves
 it. From a major chord only the root moves (G B D to G# B D), so G, `o`, `k`
 plays G, G#dim, Am. From a minor chord the root and the third both rise a
 half step (Am to A#dim), which `k` takes to the scale's own chord a step up
 (Bdim in A minor). From a diminished chord it climbs again (G#dim to Adim).
-The overlay shows it as `♯` on the up-step row; `/push o` and
-`/harmony raise root` reach it from the palette. There is no key back to the
+The overlay shows it as `o lean` on the fifths row beside `l lift`; `/push o`
+and `/harmony lean` reach it from the palette. There is no key back to the
 authored progression: once pushed, the home row is the instrument (a state
 recall or another song is the way out), and undo stops at the first landed
 push. Every move and undo is also a `/` operation (`/harmony lift`,
