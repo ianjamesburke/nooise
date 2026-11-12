@@ -1159,6 +1159,8 @@ pub(crate) enum Intent {
     BeginNumeric(char),
     TypeCharacter(char),
     Backspace,
+    /// Clear the palette's whole text line (Cmd+Backspace, Ctrl+U).
+    ClearLine,
     PaletteAutocomplete,
     Confirm,
     OpenPalette,
@@ -1285,7 +1287,9 @@ impl Intent {
             ],
             Self::Confirm => &[ModeKind::Numeric, ModeKind::Palette, ModeKind::Automation],
             Self::TypeCharacter(_) | Self::Backspace => &[ModeKind::Numeric, ModeKind::Palette],
-            Self::PaletteAutocomplete | Self::CommitPaletteAtBar => &[ModeKind::Palette],
+            Self::PaletteAutocomplete | Self::CommitPaletteAtBar | Self::ClearLine => {
+                &[ModeKind::Palette]
+            }
             Self::OpenAutomationField => &[ModeKind::Automation],
             Self::EnterLayer(_)
             | Self::EnterChordProgression
@@ -1373,6 +1377,7 @@ impl Intent {
             | Self::ChangePage(_)
             | Self::TypeCharacter(_)
             | Self::Backspace
+            | Self::ClearLine
             | Self::AdjustSelected(_) => PhasePolicy::Repeatable,
             Self::ReleaseLeadTone(_)
             | Self::ReleaseGesture(_)
@@ -2160,6 +2165,15 @@ fn update_palette(
                 }
             } else {
                 palette.query.pop();
+                palette.selected = 0;
+            }
+        }
+        // The whole line: a locked value's digits, else the query.
+        Intent::ClearLine => {
+            if palette.locked.is_some() {
+                palette.value_buffer.clear();
+            } else {
+                palette.query.clear();
                 palette.selected = 0;
             }
         }

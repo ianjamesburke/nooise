@@ -579,6 +579,10 @@ pub(crate) fn map_input(
                 palette_binding(&key.code)
             } else if has_control {
                 palette_control_binding(&key.code)
+            } else if key.modifiers == Modifiers::SUPER && key.code == PhysicalKey::Backspace {
+                // Cmd+Backspace where the terminal reports Cmd (the kitty
+                // keyboard protocol: CSI 127;9u).
+                Some(Intent::ClearLine)
             } else {
                 return deferred_runtime(MODIFIED_BINDING_UNOWNED);
             }
@@ -723,6 +727,9 @@ fn palette_control_binding(code: &PhysicalKey) -> Option<Intent> {
         PhysicalKey::Character('p' | 'P') => Intent::MoveSelection(-1),
         PhysicalKey::Character('n' | 'N') => Intent::MoveSelection(1),
         PhysicalKey::Character('b' | 'B') => Intent::CommitPaletteAtBar,
+        // Ctrl+U clears the line, as in a shell; it is also the byte (0x15)
+        // iTerm2 and Ghostty send for Cmd+Backspace by default.
+        PhysicalKey::Character('u' | 'U') => Intent::ClearLine,
         _ => return None,
     })
 }

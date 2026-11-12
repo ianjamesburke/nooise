@@ -3397,6 +3397,40 @@ fn stale_lane_palette_target_shows_failure_without_touching_replacement() {
     );
 }
 
+/// Cmd+Backspace clears the whole palette line, in every form a terminal
+/// delivers it: Backspace with SUPER (the kitty keyboard protocol, CSI
+/// 127;9u) and Ctrl+U (byte 0x15, what iTerm2 and Ghostty send for
+/// Cmd+Backspace by default; also the shell's clear-line), on both terminal
+/// profiles.
+#[test]
+fn cmd_backspace_clears_the_palette_line_in_every_form_it_arrives() {
+    const CONTROL: u8 = 0b000010;
+    const SUPER: u8 = 0b001000;
+    for capabilities in [
+        TerminalCapabilities::full(),
+        TerminalCapabilities::default(),
+    ] {
+        for clear in [
+            modified_key(0, FixtureKey::Backspace, InputPhase::Press, SUPER),
+            modified_key(0, FixtureKey::Character('u'), InputPhase::Press, CONTROL),
+        ] {
+            let mut events = vec![key(0, FixtureKey::Character('/'), InputPhase::Press)];
+            events.extend(
+                "kick only"
+                    .chars()
+                    .map(|character| key(0, FixtureKey::Character(character), InputPhase::Press)),
+            );
+            events.push(clear);
+            events.push(key(0, FixtureKey::Character('x'), InputPhase::Press));
+            let result = replay(&events, capabilities);
+            let InteractionMode::Palette(palette) = result.model.mode else {
+                panic!("the palette stays open")
+            };
+            assert_eq!(palette.query, "x", "{capabilities:?}");
+        }
+    }
+}
+
 #[test]
 fn mix_action_aliases_render_at_minimum_size_and_autocomplete_without_value_entry() {
     for (query, name, description) in [
