@@ -166,7 +166,7 @@ mutes, effects, and CPU. A rename alone does not resolve the current duplication
 | Topic | Captured request | Next proof |
 | --- | --- | --- |
 | Startup drums | Clap read Rate 2 in the default set; it should start at 0.25 with step 5, and Kick at 0.25 with steps 1 and 5, "across the board for start up". | Fresh launch and every built-in song (including `nooise 1`) open with both on the sixteenth grid and the same hits as before; confirm by ear that nothing moved, then edit a step. |
-| Downbeat reset | "Need a way to reset the down beat cleanly"; when the felt bar drifts from the grid, re-anchor rather than change the song. Implemented as `d` / `/downbeat`, quantized so the next beat line becomes beat one and the beat phase never moves ([Performance](../PERFORMANCE.md#downbeat-reset)). | Tap `d` just before a felt beat one during a set with Kick and a queued state; confirm the pulse never stumbles and the chord rings on. |
+| Downbeat reset | "Need a way to reset the down beat cleanly"; when the felt bar drifts from the grid, re-anchor rather than change the song. Implemented as Shift+D / `/downbeat` (plain `d` retired as too easy to hit), quantized so the nearest beat line becomes beat one and the beat phase never moves ([Performance](../PERFORMANCE.md#downbeat-reset)). | Tap Shift+D just before a felt beat one during a set with Kick and a queued state; confirm the pulse never stumbles and the chord rings on. |
 
 ## Named songs and transition previews
 

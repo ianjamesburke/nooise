@@ -294,15 +294,17 @@ not a state worth sharing, so a loaded code always plays.
 
 ## Downbeat reset
 
-When the grid stops matching the beat you feel, press `d` on the beat you
-feel as one, or use `/downbeat` (also `reset downbeat`, `beat one`, `bar
+When the grid stops matching the beat you feel, press Shift+D on the beat
+you feel as one, or use `/downbeat` (also `reset downbeat`, `beat one`, `bar
 one`). The nearest beat line becomes beat one of bar one: a press up to half
 a beat early waits for the line, and a press up to half a beat late takes
 the line just played, so a slightly late tap is never a beat late. The beat
 itself never moves: the tempo and the beat phase stay the same, and only the
 bar numbering rotates by whole beats. Nothing jumps mid-beat. It works from
 browsing on every terminal, as a press edge with no key-release support
-needed. Pressing again before a line ahead changes nothing.
+needed. It is shifted so a stray home-row tap cannot move bar one; plain `d`
+does nothing in browsing. Pressing again before a line ahead changes
+nothing.
 
 A late press applies at once, as though the line just played had been beat
 one all along: everything below counts from that line. Hits the old grid
@@ -331,10 +333,10 @@ next one due.
   since the line is a beat line. A hold that has not started looping yet
   keeps its count and starts on the line it would have.
 - Auto: the morph keeps going, moved back with the restarted chord, so its
-  phrases stay on the chords. Pressing `d` doesn't count as an edit, so auto
+  phrases stay on the chords. Pressing Shift+D doesn't count as an edit, so auto
   keeps running.
 
-While the clock is stopped, `d` only shows a message, because Shift+P already
+While the clock is stopped, Shift+D only shows a message, because Shift+P already
 starts at bar one. Song codes never carry a reset. It only moves the live
 clock, and a loaded code always starts at beat zero anyway.
 
@@ -496,10 +498,10 @@ Lead play retains its own `i` entry and existing bindings.
    `'` overlay and recall as stored. Check both overlays at 46x11.
 12. Edit the set file to start a line with `A`: relaunch shows the refusal at
    launch and the song plays.
-13. With Kick audible, tap `d` just before a beat that is not the bar's first:
+13. With Kick audible, tap Shift+D just before a beat that is not the bar's first:
    that beat becomes beat one, with no stumble in the pulse. The chord keeps
    ringing with no re-attack, and the ribbon restarts that chord's first
-   measure. Queue a state, tap `d` mid-phrase: the `in N bars` countdown
+   measure. Queue a state, tap Shift+D mid-phrase: the `in N bars` countdown
    grows, and the landing falls on the new grid's phrase end.
 
 13. On song 1 (A minor), hold Space and tap `f`: C fades in at once over
