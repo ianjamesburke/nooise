@@ -1716,8 +1716,12 @@ fn morph_percentage_phase_silences_kick_and_bass_including_automation_and_tails(
         let mut held_peak = 0.0f32;
         let mut crossing_peak = 0.0f32;
         let mut landed_peak = 0.0f32;
+        // The output stage delays what is heard by its lookahead; 120 BPM is
+        // two beats a second.
+        let latency_beats =
+            engine.master_bus.limiter.latency() as f64 * 2.0 / f64::from(sample_rate);
         for frame in 0..(sample_rate * 6.5) as usize {
-            let beat = engine.tempo.beat;
+            let beat = engine.tempo.beat - latency_beats;
             let (left, right) = engine.next_stereo();
             let peak = left.abs().max(right.abs());
             let seconds = frame as f32 / sample_rate;

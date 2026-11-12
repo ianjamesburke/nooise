@@ -100,6 +100,26 @@ fn engine_perf_probe() {
 
     let (_s, mut e) = engine_for(&default_song);
     report("default steady", run(&mut e, buffers, |_, _| {}));
+
+    // The Master output limiter alone, fed a signal it has to reduce.
+    {
+        let mut limiter = crate::fx::limiter::Limiter::new(RATE);
+        let t = Instant::now();
+        let mut acc = 0.0f32;
+        for n in 0..buffers * BUF {
+            let x = 1.5 * (n as f32 * 0.01).sin();
+            let (l, r) = limiter.process(x, -x);
+            acc += l + r;
+        }
+        std::hint::black_box(acc);
+        let per_buffer = t.elapsed().as_nanos() as f64 / buffers as f64 / 1000.0;
+        let budget = BUF as f64 / f64::from(RATE) * 1e6;
+        println!(
+            "{:<34} mean {per_buffer:.2} us per {BUF}-frame buffer ({:.3}% of {budget:.0} us)",
+            "master limiter alone",
+            per_buffer / budget * 100.0
+        );
+    }
     let mut all = Stats::default();
     for song in &songs {
         let (_s, mut e) = engine_for(song);
