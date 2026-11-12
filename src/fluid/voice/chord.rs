@@ -314,20 +314,24 @@ fn chord_name_parts(slot: &ChordSlotControls) -> ChordNameParts {
 
 /// How chords are written on screen. Presentation only: it never reaches the
 /// engine or a song code.
+/// Roman is the default: a chord reads as its function in the home key, so
+/// a move's result is legible without spelling the key.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ChordNames {
-    #[default]
     Letters,
+    #[default]
     Roman,
 }
 
-/// Everything a chord's on-screen name depends on: letters or Roman, and the
-/// Master Key letters are written in (Roman reads against the home key, so
-/// the key never changes it).
+/// Everything a chord's on-screen name depends on: letters or Roman, the
+/// Master Key letters are written in, and the Master Mode Roman reads in
+/// (`None`, Home, reads each progression in its own mode). Roman reads
+/// against the home key, so the Master Key never changes it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ChordLabels {
     pub(crate) names: ChordNames,
     pub(crate) key: MasterKey,
+    pub(crate) mode: Option<HomeMode>,
 }
 
 /// A chord as a Roman numeral against a home key: the root's degree in the
@@ -376,7 +380,7 @@ pub(crate) fn roman_chord_name(slot: &ChordSlotControls, tonic: i32, mode: HomeM
     name
 }
 
-const ROMAN_NUMERALS: [&str; 7] = ["I", "II", "III", "IV", "V", "VI", "VII"];
+pub(crate) const ROMAN_NUMERALS: [&str; 7] = ["I", "II", "III", "IV", "V", "VI", "VII"];
 
 /// The mode degree (0-based) an interval above the tonic falls on, with the
 /// accidental that reaches it: none inside the mode, otherwise a flat on the

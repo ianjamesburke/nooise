@@ -97,6 +97,15 @@ impl Triad {
         )
     }
 
+    /// As the screen writes it: a Roman numeral in `key` (the home pushes
+    /// move in), or a letter name under the Master Key for `progression`.
+    pub(crate) fn label(self, labels: ChordLabels, key: HomeKey, progression: usize) -> String {
+        match labels.names {
+            ChordNames::Roman => key.roman(self),
+            ChordNames::Letters => self.name(labels.key.shift(progression)),
+        }
+    }
+
     /// The triad a resolved chord is heard as: its root, and the quality its
     /// third and fifth spell. A chord with no third (sus, power) takes the
     /// home mode's own triad on its root, or major off the scale.
@@ -158,6 +167,19 @@ impl HomeKey {
         let progression = progression_index(controls.pad.progression);
         let (tonic, own, _) = progression_home(progression);
         Self::new(tonic, master_mode(controls.master.mode).1.unwrap_or(own))
+    }
+
+    /// `triad` as a Roman numeral in this key: its degree, flat (or sharp
+    /// for a raised seventh) off the scale, upper case major, lower case
+    /// minor, lower case with `°` diminished ("i", "bVI", "#vii°").
+    pub(crate) fn roman(self, triad: Triad) -> String {
+        let (accidental, degree) = scale_degree(triad.root() - i32::from(self.tonic), self.mode);
+        let numeral = ROMAN_NUMERALS[degree];
+        match triad.quality {
+            TriadQuality::Major => format!("{accidental}{numeral}"),
+            TriadQuality::Minor => format!("{accidental}{}", numeral.to_lowercase()),
+            TriadQuality::Diminished => format!("{accidental}{}°", numeral.to_lowercase()),
+        }
     }
 
     fn scale(self) -> [i32; 7] {
@@ -642,6 +664,48 @@ mod tests {
     fn names_follow_the_master_key_shift() {
         assert_eq!(am().name(3), "Cm");
         assert_eq!(Triad::new(11, TriadQuality::Diminished).name(0), "Bdim");
+    }
+
+    #[test]
+    fn roman_numerals_read_the_home_key_and_mode() {
+        use TriadQuality::{Diminished, Major, Minor};
+        let a_minor = HomeKey::new(9, HomeMode::Minor);
+        for (root, quality, expected) in [
+            (9, Minor, "i"),
+            (11, Diminished, "ii°"),
+            (0, Major, "III"),
+            (2, Minor, "iv"),
+            (4, Major, "V"),
+            (5, Major, "VI"),
+            (7, Major, "VII"),
+            (8, Diminished, "#vii°"),
+            (3, Major, "bV"),
+        ] {
+            assert_eq!(a_minor.roman(Triad::new(root, quality)), expected);
+        }
+        let a_major = HomeKey::new(9, HomeMode::Major);
+        assert_eq!(a_major.roman(Triad::new(5, Major)), "bVI");
+        assert_eq!(a_major.roman(Triad::new(7, Major)), "bVII");
+        assert_eq!(a_major.roman(Triad::new(9, Major)), "I");
+        // The same triad in another key or mode reads as its function there.
+        let a_dorian = HomeKey::new(9, HomeMode::Dorian);
+        assert_eq!(a_dorian.roman(Triad::new(2, Major)), "IV");
+    }
+
+    #[test]
+    fn the_key_reads_as_a_chord_symbol_for_major_and_minor_and_by_name_otherwise() {
+        for (mode, expected) in [
+            (HomeMode::Minor, "Am"),
+            (HomeMode::Major, "A"),
+            (HomeMode::Dorian, "A Dorian"),
+            (HomeMode::Phrygian, "A Phrygian"),
+            (HomeMode::Mixolydian, "A Mixolydian"),
+        ] {
+            assert_eq!(
+                progression_home_label(0, MasterKey::Home, Some(mode)),
+                expected
+            );
+        }
     }
 
     #[test]

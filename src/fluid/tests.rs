@@ -379,10 +379,11 @@ fn master_key_renames_the_key_and_the_letter_chords() {
     let labels = ChordLabels {
         names: ChordNames::Letters,
         key: MasterKey::Pitch(0),
+        mode: None,
     };
-    assert_eq!(progression_home_label(0, labels.key, None), "C minor");
+    assert_eq!(progression_home_label(0, labels.key, None), "Cm");
     assert_eq!(progression_label(0, labels.key), "Cm · Drift");
-    assert_eq!(progression_home_label(0, MasterKey::Home, None), "A minor");
+    assert_eq!(progression_home_label(0, MasterKey::Home, None), "Am");
     let pad = PadControls::default();
     assert_eq!(pad_chord_name(&pad, 0, 0, labels), "Cm7add11");
     assert_eq!(
@@ -393,6 +394,7 @@ fn master_key_renames_the_key_and_the_letter_chords() {
     let roman_in_c = ChordLabels {
         names: ChordNames::Roman,
         key: MasterKey::Pitch(0),
+        mode: None,
     };
     assert_eq!(
         pad_chord_name(&pad, 0, 0, roman_in_c),
@@ -5243,7 +5245,7 @@ fn render_names_the_chords_of_the_playing_window() {
         mute: &[false; TAB_COUNT],
     }));
     assert!(text.contains("Am · Drift"), "{text}");
-    assert!(text.contains("CHORDS  A5 › G5 › C › Em/G"), "{text}");
+    assert!(text.contains("CHORDS  i5 › VII5 › III › v/7"), "{text}");
 }
 
 #[test]
@@ -7124,6 +7126,7 @@ fn roman() -> ChordLabels {
     ChordLabels {
         names: ChordNames::Roman,
         key: MasterKey::Home,
+        mode: None,
     }
 }
 

@@ -76,12 +76,14 @@ pub(crate) struct LiveSessionSnapshot {
 }
 
 impl LiveSessionSnapshot {
-    /// How this generation writes chord names: its display choice and the
-    /// Master Key that letters are written in.
+    /// How this generation writes chord names: its display choice, the
+    /// Master Key that letters are written in, and the Master Mode Roman
+    /// numerals read in.
     pub(crate) fn chord_labels(&self) -> ChordLabels {
         ChordLabels {
             names: self.chord_names,
             key: MasterKey::from_control(self.controls.master.key),
+            mode: master_mode(self.controls.master.mode).1,
         }
     }
 

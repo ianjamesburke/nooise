@@ -1209,7 +1209,7 @@ impl EffectExecutor {
         let beat = self.current_beat(beat);
         let phrase_start = self.session.audio_phrase_start();
         let mut outcome = PushOutcome::Nothing;
-        let mut shift = 0;
+        let mut write = None;
         let mut quantize = PushQuantize::default();
         let snapshot = self.session.update(|snapshot| {
             let pad = &snapshot.controls.pad;
@@ -1219,7 +1219,11 @@ impl EffectExecutor {
                 None => usize::from(sounding_chord(pad, beat, phrase_start).1),
             };
             let authored = authored_triad(pad, progression, slot);
-            shift = MasterKey::from_control(snapshot.controls.master.key).shift(progression);
+            write = Some((
+                snapshot.chord_labels(),
+                HomeKey::of_song(&snapshot.controls),
+                progression,
+            ));
             quantize = snapshot.push.quantize;
             outcome =
                 snapshot
@@ -1231,7 +1235,10 @@ impl EffectExecutor {
             Some(_) => format!(" · quantize {}", quantize.label()),
         };
         self.show_message(match outcome {
-            PushOutcome::Queued(triad) => format!("Harmony → {}{when}", triad.name(shift)),
+            PushOutcome::Queued(triad) => {
+                let (labels, key, progression) = write.expect("the update ran");
+                format!("Harmony → {}{when}", triad.label(labels, key, progression))
+            }
             PushOutcome::Cancelled => "Push cancelled".to_string(),
             PushOutcome::Nothing => "Nothing to undo".to_string(),
         });

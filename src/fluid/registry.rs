@@ -3782,6 +3782,7 @@ pub(crate) fn chords_tab_controls(
                         ChordLabels {
                             names: ChordNames::Letters,
                             key: MasterKey::from_control(c.master.key),
+                            mode: master_mode(c.master.mode).1,
                         },
                     );
                 }

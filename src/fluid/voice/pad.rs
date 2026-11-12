@@ -1010,9 +1010,10 @@ pub(crate) fn progression_tonic_pitch_class(progression: usize) -> i32 {
 }
 
 /// The key a progression sounds in under the Master Key: its authored home,
-/// or the chosen pitch class with the same mode ("C minor").
-/// `mode` is the Master Mode when one is chosen, which names the home pushes
-/// move in; `None` keeps the progression's own.
+/// or the chosen pitch class with the same mode. Written as a chord symbol
+/// for major and minor ("A", "Am") and by name for the other modes
+/// ("A Dorian"). `mode` is the Master Mode when one is chosen, which names
+/// the home pushes move in; `None` keeps the progression's own.
 pub(crate) fn progression_home_label(
     progression: usize,
     key: MasterKey,
@@ -1026,7 +1027,11 @@ pub(crate) fn progression_home_label(
             chord_pitch_name(progression_tonic_pitch_class(progression) + key.shift(progression))
         }
     };
-    format!("{tonic} {}", mode.label())
+    match mode {
+        HomeMode::Major => tonic.to_string(),
+        HomeMode::Minor => format!("{tonic}m"),
+        _ => format!("{tonic} {}", mode.label()),
+    }
 }
 
 /// Built-in progressions in dial order. With an 8 s release each chord rings
@@ -2073,7 +2078,8 @@ pub(crate) fn pad_chord_tones(c: &PadControls, progression: usize, slot: usize) 
 }
 
 /// The displayed identity follows the same resolved chord as every voice.
-/// Roman names read against the progression's own home key.
+/// Roman names read against the home: the progression's tonic, in the Master
+/// Mode when one is chosen, else the progression's own mode.
 pub(crate) fn pad_chord_name(
     c: &PadControls,
     progression: usize,
@@ -2084,8 +2090,8 @@ pub(crate) fn pad_chord_name(
     match labels.names {
         ChordNames::Letters => custom_chord_name(chord, labels.key.shift(progression)),
         ChordNames::Roman => {
-            let (tonic, mode, _) = progression_home(progression);
-            roman_chord_name(chord, tonic, mode)
+            let (tonic, own, _) = progression_home(progression);
+            roman_chord_name(chord, tonic, labels.mode.unwrap_or(own))
         }
     }
 }

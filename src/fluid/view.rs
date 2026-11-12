@@ -345,8 +345,8 @@ pub(crate) enum PerformanceSurface {
     },
 }
 
-/// Push the Harmony as the header and its overlay show it, in letter names
-/// under the Master Key.
+/// Push the Harmony as the header and its overlay show it, written as the
+/// session's chord labels say: Roman numerals in the home key by default.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct HarmonyView {
     /// The chord sounding now: the pushed one, or the progression's.
@@ -368,16 +368,17 @@ impl HarmonyView {
     fn project(session: &LiveSessionSnapshot, active_slot: usize, beat: f64) -> Self {
         let pad = &session.controls.pad;
         let progression = progression_index(pad.progression);
-        let shift = session.chord_labels().key.shift(progression);
+        let labels = session.chord_labels();
         let key = HomeKey::of_song(&session.controls);
+        let write = |triad: Triad| triad.label(labels, key, progression);
         let authored = authored_triad(pad, progression, active_slot);
         let push = &session.push;
         let base = push.base(authored, beat);
         let sounding = push.sounding(beat);
         Self {
             sounding: sounding.map_or_else(
-                || pad_chord_name(pad, progression, active_slot, session.chord_labels()),
-                |held| held.triad.name(shift),
+                || pad_chord_name(pad, progression, active_slot, labels),
+                |held| write(held.triad),
             ),
             held: sounding.is_some(),
             looping: push.looping.map(|looping| {
@@ -388,11 +389,11 @@ impl HarmonyView {
             }),
             queued: push
                 .queued
-                .map(|queued| (queued.target.name(shift), queued.land_beat)),
+                .map(|queued| (write(queued.target), queued.land_beat)),
             quantize: push.quantize,
             previews: HARMONY_MOVES
                 .each_ref()
-                .map(|row| row.harmony_move.apply(base, key).name(shift)),
+                .map(|row| write(row.harmony_move.apply(base, key))),
         }
     }
 
@@ -1520,8 +1521,8 @@ mod tests {
                 ..TelemetryView::default()
             },
         );
-        assert!(frame.contains("KEY␠␠A␠minor"), "{frame}");
-        assert!(frame.contains("CHORDS␠␠Am7add11␠›␠Gsus2add11"), "{frame}");
+        assert!(frame.contains("KEY␠␠Am␠"), "{frame}");
+        assert!(frame.contains("CHORDS␠␠i7add11␠›␠VIIsus2add11"), "{frame}");
         assert!(frame.contains("Master"), "{frame}");
 
         session.controls.pad.progression = 4.0;
@@ -1536,21 +1537,37 @@ mod tests {
         let mut session = session();
         session.controls.pad.progression = 0.0;
         session.controls.master.key = 1.0;
+        session.chord_names = ChordNames::Letters;
         let frame = render_model_with_session(&interaction, &session);
-        assert!(frame.contains("KEY␠␠C␠minor"), "{frame}");
+        assert!(frame.contains("KEY␠␠Cm␠"), "{frame}");
         assert!(frame.contains("CHORDS␠␠Cm7add11"), "{frame}");
     }
 
     #[test]
-    fn roman_chords_replace_the_letters_in_the_harmony_header() {
+    fn roman_chords_are_the_default_and_read_in_the_master_mode() {
         let interaction = InteractionModel::default();
         let mut session = session();
         session.controls.pad.progression = 0.0;
-        session.chord_names = ChordNames::Roman;
+        assert_eq!(session.chord_names, ChordNames::Roman);
         let frame = render_model_with_session(&interaction, &session);
-        assert!(frame.contains("KEY␠␠A␠minor"), "{frame}");
+        assert!(frame.contains("KEY␠␠Am␠"), "{frame}");
         assert!(frame.contains("CHORDS␠␠i7add11␠›␠VIIsus2add11"), "{frame}");
         assert!(!frame.contains("Am7add11"), "{frame}");
+
+        // Master Mode Major on Drift's A tonic: the same chords read as
+        // borrowed against A major, and the key reads `A`.
+        session.controls.master.mode = 1.0;
+        let major = render_model_with_session(&interaction, &session);
+        assert!(major.contains("KEY␠␠A␠"), "{major}");
+        assert!(major.contains("CHORDS␠␠i7add11␠›␠bVIIsus2add11"), "{major}");
+        session.controls.master.mode = 5.0;
+        let mixolydian = render_model_with_session(&interaction, &session);
+        assert!(mixolydian.contains("KEY␠␠A␠Mixolydian"), "{mixolydian}");
+        assert!(mixolydian.contains("VIIsus2add11"), "{mixolydian}");
+
+        session.chord_names = ChordNames::Letters;
+        let letters = render_model_with_session(&interaction, &session);
+        assert!(letters.contains("CHORDS␠␠Am7add11"), "{letters}");
     }
 
     #[test]
@@ -1569,12 +1586,8 @@ mod tests {
         let mut session = session();
         session.controls.pad.progression = 0.0;
         let frame = render_model_with_session(&interaction, &session);
-        for expected in [
-            "KEY␠␠A␠minor",
-            "CHORDS␠␠Am7add11",
-            "Am7add11␠·␠Built-in",
-            "Root",
-        ] {
+        for expected in ["KEY␠␠Am␠", "CHORDS␠␠i7add11", "i7add11␠·␠Built-in", "Root"]
+        {
             assert!(frame.contains(expected), "missing {expected}: {frame}");
         }
     }
@@ -1657,14 +1670,15 @@ mod tests {
                 // carries the same now/next line itself.
                 if height > 11 {
                     let chords = frame.lines().find(|line| line.contains("CHORDS")).unwrap();
-                    assert!(chords.contains("C␠→␠G␠in␠1␠bar␠␠PUSH"), "{frame}");
+                    assert!(chords.contains("III␠→␠VII␠in␠1␠bar␠␠PUSH"), "{frame}");
                 }
                 for expected in [
-                    "now␠C␠→␠G␠·␠1␠bar",
-                    "u↓2␠Em",
-                    "j↓1␠F",
-                    "m↓3␠Dm",
-                    ",↑3␠C",
+                    "now␠III␠→␠VII␠·␠1␠bar",
+                    "u↓2␠v",
+                    "j↓1␠VI",
+                    "m↓3␠iv",
+                    "i↑2␠ii°",
+                    ",↑3␠III",
                     "l␠lift",
                     "a␠home",
                     "⌫␠undo",
@@ -1883,22 +1897,18 @@ mod tests {
             80,
             11,
         );
-        let key_line = frame.lines().find(|line| line.contains("KEY")).unwrap();
-        let chords_line = frame.lines().find(|line| line.contains("CHORDS")).unwrap();
-        assert_eq!(
-            key_line
-                .chars()
-                .position(|character| character == 'K')
-                .unwrap(),
-            (80 - "KEY  A minor".len()) / 2 - 1
-        );
-        assert_eq!(
-            chords_line
-                .chars()
-                .position(|character| character == 'C')
-                .unwrap(),
-            18
-        );
+        // Each line sits centred between the panel borders: its margins
+        // differ by at most the one cell an odd remainder leaves.
+        for label in ["KEY", "CHORDS"] {
+            let line = frame.lines().find(|line| line.contains(label)).unwrap();
+            let cells: Vec<char> = line.chars().collect();
+            let left_border = cells.iter().position(|&cell| cell == '│').unwrap();
+            let right_border = cells.iter().rposition(|&cell| cell == '│').unwrap();
+            let inner = &cells[left_border + 1..right_border];
+            let left = inner.iter().take_while(|&&cell| cell == '␠').count();
+            let right = inner.iter().rev().take_while(|&&cell| cell == '␠').count();
+            assert!(left.abs_diff(right) <= 1, "{left} vs {right}: {line}");
+        }
     }
 
     fn render_mode(mode: InteractionMode) -> String {

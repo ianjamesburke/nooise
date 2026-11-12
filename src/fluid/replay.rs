@@ -6103,7 +6103,7 @@ fn a_push_lands_on_the_bar_and_stays() {
     assert_eq!(held.triad.name(0), "C");
     assert_eq!(landed.harmony_queued, None);
     let frame = &landed.frames.last().unwrap().text;
-    assert!(frame.contains("C  PUSH"), "{frame}");
+    assert!(frame.contains("III  PUSH"), "{frame}");
     assert!(frame.contains("Push the Harmony"), "{frame}");
 
     // Letting Space go, and keys that are not moves, leave it held: there is
@@ -6211,10 +6211,10 @@ fn by_default_a_push_lands_on_the_next_beat() {
     assert_eq!(before_beat.harmony_held, None);
     let frame = &before_beat.frames.last().unwrap().text;
     assert!(
-        frame.contains("Am7add11 → Bdim ") && !frame.contains(" bar"),
+        frame.contains("i7add11 → ii° ") && !frame.contains(" bar"),
         "{frame}"
     );
-    assert!(frame.contains("Bdim · 1 beat"), "{frame}");
+    assert!(frame.contains("ii° · 1 beat"), "{frame}");
     let landed = replay(
         &[
             space(InputPhase::Press),
@@ -6249,8 +6249,8 @@ fn the_palette_sets_the_quantize_and_the_overlay_shows_it() {
     let result = replay(&trace, TerminalCapabilities::full());
     assert_eq!(queued_harmony(&result), Some(("Em".to_string(), 8.0)));
     let frame = &result.frames.last().unwrap().text;
-    assert!(frame.contains("Em · 2 bars"), "{frame}");
-    assert!(frame.contains("Em in 2 bars"), "{frame}");
+    assert!(frame.contains("v · 2 bars"), "{frame}");
+    assert!(frame.contains("v in 2 bars"), "{frame}");
 }
 
 /// `'` is go: a layer key opens that layer, `j` reaches its Level, and the

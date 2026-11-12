@@ -85,9 +85,12 @@
   their quality from, and `a` returns to. It never rewrites a progression,
   a loop or the sounding chord; to hear material in a new mode, push it
   there and loop it. Saved in song codes.
-- **Chord names:** Letters ("Am7") or Roman numerals ("i7"), a display choice
-  made from `/` that never changes sound or a song code. Roman reads each chord
-  against the progression's own home key and mode.
+- **Chord names:** Roman numerals ("i7", the default) or letters ("Am7"), a
+  display choice made from `/` that never changes sound or a song code. Roman
+  reads each chord against the home: the progression's tonic in the Master
+  Mode, or the progression's own mode under Home.
+- **Key label:** the header writes the home as a chord symbol for major and
+  minor (`A`, `Am`) and by name for the other modes (`A Dorian`).
 - **Progression:** eight chords the Pad, Bass, Arp, and Lead all follow. A
   built-in one is named by key and mood ("Am · Drift"); Custom is built from
   eight user-authored chord slots.

@@ -329,7 +329,11 @@ rewrites the progression, a loop or the chord sounding now, so played colour
 and borrowed chords are never lost; changing Key or Mode mid-push leaves the
 sounding chord alone and only later moves follow the new home. To hear a
 loop in another mode, push it there and grab it again. The header names the
-home (`KEY  A Dorian`). `/mode dorian` and `/key d` (or `/key f sharp`) reach
+home (`KEY  Am`, `KEY  A`, `KEY  A Dorian`), and chords in the header and
+the Space overlay read as Roman numerals in that home: upper case major,
+lower case minor, `°` diminished, a flat for a root off the scale (`bVI`),
+extensions kept (`i7`, `IVmaj7`). `/letters` writes letter names instead;
+`/roman` returns. `/mode dorian` and `/key d` (or `/key f sharp`) reach
 both from the palette. Mode is saved in song codes.
 
 ## Harmony loops
