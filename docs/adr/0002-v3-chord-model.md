@@ -1,6 +1,8 @@
 # ADR 0002: Chord model v3 — separate harmony, voicing, and rhythm
 
-- Status: Accepted; Stage 1 implemented (`voice/harmony.rs`), Stages 2–3 pending
+- Status: Accepted; Stage 1 implemented (`voice/harmony.rs`), Stages 2–3 pending;
+  amended 2026-11-11 by [ADR 0003](0003-chord-lane-and-clock.md) (one timed
+  lane and one stateless clock replace `[Cell; 16]` and the cursors)
 - Date: 2026-10-26
 - Scope: the `pad.progression` catalog, the chord-slot editor and registry
   rows, the shared chord resolver, the song-code payload for chords, chord
@@ -128,8 +130,8 @@ Progression { song_value, name, home_mode, bass: [BassStep], cells: [Cell; N] }
    old common-tone rule that survives.
 5. The chord a voice sounds is still resolved from one place. `Pad`, `Bass`,
    `Arp`, `Lead`, and `Tonal` continue to read `[i32; 4]` notes, a bass root,
-   and a home scale through `ProgressionFollower`/`ProgressionCursor`; the
-   follower contract does not change.
+   and a home scale from one `LaneClock` (ADR 0003), replacing
+   `ProgressionFollower`/`ProgressionCursor`.
 6. A chord's displayed name still matches its realized voicing
    (`built_in_chord_names_match_their_voicings` becomes the new-model
    equivalent).
@@ -160,8 +162,8 @@ Progression { song_value, name, home_mode, bass: [BassStep], cells: [Cell; N] }
   harmony→available-tones step, and `pad_chord_notes_with_slot` becomes an
   explicit `realize(harmony, voicing)`.
 - `MasterKey` and `progression_home` / `HomeMode` — the key and scale model.
-- `ProgressionFollower`, `ProgressionCursor`, `ChordWindow`, and the
-  `chord_span` telemetry contract.
+- `ChordWindow` and the `chord_span` telemetry contract (the cursors go per
+  ADR 0003).
 - The downstream voice path in `bass.rs`, `arp.rs`, `lead.rs`, `tonal.rs`.
 - The gate/articulation idea subsumes and retires the Creep problem.
 - The song-named progressions (personal build) authored under the new model.
@@ -237,10 +239,8 @@ Landed:
 
 Remaining (the lane + voicing epic):
 
-- `PadControls.chord_slots` and `chord_overrides` become `[Cell; 16]`;
-  `chord_slot` returns an owned `Cell`, so the stored fields *are* `Harmony`,
-  `Voicing`, and `Gate` rather than a legacy slot the cell is derived from.
-  This cascades through ~50 call sites and ~46 test field reads.
+- Superseded by ADR 0003: the stored chords become a `HarmonyLane` of timed
+  events whose cells *are* `Harmony`, `Voicing`, and `Gate`, not `[Cell; 16]`.
 - Voicing becomes explicit: the `voicing` control seeds the four `Voicing`
   voices from a mode and a manual tone edit selects Custom, mirroring how
   `arp.pattern` seeds `arp.step1..16`. Per-tone rows live in a `Voicing ›`
