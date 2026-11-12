@@ -3464,11 +3464,17 @@ fn palette_recipes_use_the_production_mapper_preserve_cursor_and_save_lanes() {
             assert_eq!(result.automation_address, Some("pad.level"));
             assert!(!result.auto_running);
             assert_eq!(result.effect_count("ApplyRecipe"), 1);
+            let shown = if id == recipe::RecipeId::Sidechain {
+                "10%"
+            } else {
+                " 0%"
+            };
             assert!(
                 result
                     .frames
                     .iter()
-                    .any(|frame| frame.text.contains("amount") && frame.text.contains("0%"))
+                    .any(|frame| frame.text.contains("amount") && frame.text.contains(shown)),
+                "{id:?} shows {shown}"
             );
             let saved =
                 song::decode_song_code(result.saved_automation_code.as_deref().unwrap()).unwrap();

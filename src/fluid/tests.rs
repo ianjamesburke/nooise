@@ -8467,7 +8467,7 @@ fn palette_recipes_render_like_authored_lanes_and_start_sample_identical() {
                 authored.add_route(
                     address,
                     LfoRoute {
-                        depth_ratio: 0.0,
+                        depth_ratio: 0.10,
                         cycle_beats: 1.0,
                         shape: LfoShape::Ramp,
                         ramp: RampParams {
@@ -8495,7 +8495,9 @@ fn palette_recipes_render_like_authored_lanes_and_start_sample_identical() {
                 "{id:?}, sample {sample}"
             );
             let dry = dry_engine.next_stereo();
-            assert_eq!(actual, dry, "{id:?} changed sample {sample} at Amount 0%");
+            if id != recipe::RecipeId::Sidechain {
+                assert_eq!(actual, dry, "{id:?} changed sample {sample} at Amount 0%");
+            }
             if sample >= SAMPLE_RATE as usize * 2 {
                 difference_energy +=
                     f64::from((actual.0 - dry.0).powi(2) + (actual.1 - dry.1).powi(2));
@@ -8503,7 +8505,12 @@ fn palette_recipes_render_like_authored_lanes_and_start_sample_identical() {
             }
         }
         assert!(dry_energy > 1.0, "fixture must contain music");
-        assert_eq!(difference_energy, 0.0);
+        if id == recipe::RecipeId::Sidechain {
+            // /sc starts at 10%, so it is audible on insertion.
+            assert!(difference_energy > 1.0, "Sidechain must change the sound");
+        } else {
+            assert_eq!(difference_energy, 0.0);
+        }
     }
 }
 
@@ -8536,7 +8543,7 @@ fn raised_recipe_amount_changes_settled_audio() {
 }
 
 #[test]
-fn sidechain_stays_silent_through_song_code_then_ducks_when_raised() {
+fn sidechain_starts_at_ten_percent_and_a_saved_zero_stays_silent_through_song_code() {
     let address = ControlAddress::new("master.level");
     let mut snapshot = LiveSessionSnapshot::from_controls(FluidControls::default());
     snapshot.controls.master.level = 0.75;
@@ -8554,7 +8561,11 @@ fn sidechain_stays_silent_through_song_code_then_ducks_when_raised() {
     let route = loaded.automation.route(address).unwrap();
     assert_eq!(route.shape, LfoShape::Ramp);
     assert_eq!(route.ramp.anchor, -1.0);
-    assert_eq!(route.depth_ratio, 0.0);
+    assert!((route.depth_ratio - 0.10).abs() < 0.0001);
+    // Saved codes decode as written: a lane saved at 0 stays silent.
+    loaded.automation.route_mut(address).unwrap().depth_ratio = 0.0;
+    let mut loaded = song::decode_song_code(&song::encode_song_code(&loaded).unwrap()).unwrap();
+    assert_eq!(loaded.automation.route(address).unwrap().depth_ratio, 0.0);
     assert!((loaded.controls.master.level - 0.75).abs() <= 0.01);
 
     let mut dry = engine_for(loaded.controls.clone(), AutomationState::default());
@@ -8625,7 +8636,15 @@ fn recipe_insertion_keeps_base_existing_lanes_and_other_layers() {
         );
         assert_eq!(snapshot.automation.routes_for(address).count(), 2);
         assert_eq!(snapshot.automation.active_lane_index(), Some(1));
-        assert_eq!(snapshot.automation.route(address).unwrap().depth_ratio, 0.0);
+        let expected = if recipe.id == recipe::RecipeId::Sidechain {
+            0.10
+        } else {
+            0.0
+        };
+        assert_eq!(
+            snapshot.automation.route(address).unwrap().depth_ratio,
+            expected
+        );
     }
 }
 
