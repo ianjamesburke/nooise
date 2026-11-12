@@ -1548,6 +1548,8 @@ pub(crate) enum InteractionEffect {
     ToggleTransport,
     /// Re-anchor bar one on the next audio sample; see `EffectExecutor::reset_downbeat`.
     ResetDownbeat,
+    /// The swung off-beat Perc groove; see `EffectExecutor::chug`.
+    Chug,
     RemoveAutomation,
     RandomizeAutomationRow,
     RandomizeSelected,
@@ -2648,6 +2650,7 @@ fn operation_effect(operation: Operation, palette: &PaletteMode) -> InteractionE
         Operation::ToggleKickBass => InteractionEffect::ToggleKickBass,
         Operation::ToggleBeatRepeat => InteractionEffect::ToggleBeatRepeat,
         Operation::ResetDownbeat => InteractionEffect::ResetDownbeat,
+        Operation::Chug => InteractionEffect::Chug,
         Operation::State(action) => InteractionEffect::State(action),
         Operation::Harmony(action) => InteractionEffect::Harmony(action),
         Operation::HarmonyQuantize(quantize) => InteractionEffect::SetHarmonyQuantize(quantize),

@@ -18,6 +18,8 @@ pub(crate) enum Operation {
     ToggleKickBass,
     ToggleBeatRepeat,
     ResetDownbeat,
+    /// `/chug`: the swung off-beat Perc groove (`EffectExecutor::chug`).
+    Chug,
     ChordNames(ChordNames),
     ClearSequence,
     State(StateAction),
@@ -149,7 +151,7 @@ pub(crate) struct OperationSpec {
 }
 
 impl Operation {
-    pub(crate) const ALL: [Self; 88] = [
+    pub(crate) const ALL: [Self; 89] = [
         Self::Motion(MotionAction::Grab(MotionDuration::Beats4)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats8)),
         Self::Motion(MotionAction::Grab(MotionDuration::Beats16)),
@@ -177,6 +179,7 @@ impl Operation {
         Self::ToggleKickBass,
         Self::ToggleBeatRepeat,
         Self::ResetDownbeat,
+        Self::Chug,
         Self::ChordNames(ChordNames::Roman),
         Self::ChordNames(ChordNames::Letters),
         Self::ClearSequence,
@@ -342,6 +345,12 @@ impl Operation {
                 aliases: &["repeat", "beat repeat", "stutter"],
                 description: "loop the current beat of live audio; Escape releases",
             },
+            Self::Chug => OperationSpec {
+                operation: self,
+                label: "Chug",
+                aliases: &["yeehaw", "boogie"],
+                description: "swung 16th Perc, 60% swing, level accents on the off-beat",
+            },
             Self::ResetDownbeat => OperationSpec {
                 operation: self,
                 label: "Reset downbeat",
@@ -505,6 +514,7 @@ impl Operation {
             | Self::ToggleKickBass
             | Self::ToggleBeatRepeat
             | Self::ResetDownbeat
+            | Self::Chug
             | Self::ToggleAuto => None,
         }
     }

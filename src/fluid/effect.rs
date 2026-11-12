@@ -263,6 +263,32 @@ struct EffectMessage {
     failed: bool,
 }
 
+/// `/chug`'s Swing amount: 60% on the 50-75% drum-machine readout.
+const CHUG_SWING: f32 = 0.4;
+/// `/chug` raises a silent Perc Level to this so the groove is heard.
+const CHUG_SILENT_LEVEL: f32 = 0.5;
+/// `/chug`'s Level LFO: one beat, peak on the off-beat eighth, 25% depth.
+const CHUG_LFO_CYCLE_BEATS: f32 = 1.0;
+const CHUG_LFO_OFFSET_BEATS: f32 = 0.75;
+const CHUG_LFO_DEPTH: f32 = 0.25;
+
+fn chug_lfo() -> LfoRoute {
+    LfoRoute {
+        depth_ratio: CHUG_LFO_DEPTH,
+        cycle_beats: CHUG_LFO_CYCLE_BEATS,
+        phase_offset_beats: CHUG_LFO_OFFSET_BEATS,
+        shape: LfoShape::Sine,
+        ..LfoRoute::default()
+    }
+}
+
+/// The lane `/chug` owns: its shape, cycle and phase, whatever its depth.
+fn is_chug_lane(lane: &LfoRoute) -> bool {
+    lane.shape == LfoShape::Sine
+        && lane.cycle_beats == CHUG_LFO_CYCLE_BEATS
+        && lane.phase_offset_beats == CHUG_LFO_OFFSET_BEATS
+}
+
 impl EffectExecutor {
     pub(crate) fn new(session: LiveSession, auto: AutoControls) -> Self {
         Self::seeded(session, auto, rand::random())
@@ -1180,6 +1206,74 @@ impl EffectExecutor {
         self.execute(LiveEffect::SelectControl { tab, index, id })
     }
 
+    /// `/chug` (`/yeehaw`, `/boogie`): a swung off-beat groove on Perc, the
+    /// noise hats, in one edit. Like `/slapback` it is a named preset, so it
+    /// applies audible values instead of starting inert: Steady 16ths
+    /// (Pattern Steady, Interval 1/4 beat, Offset 0), a Swing module at 60%
+    /// (reused when the chain holds one), and one beat-synced sine LFO on
+    /// Level whose peak lands on each beat's off-beat eighth (`chug_lfo`; a
+    /// sine here rises from zero at phase 0, so the peak sits a quarter cycle
+    /// in and a 0.75-beat offset puts it on the "and"). Repeating reuses the
+    /// lane and reapplies the values. A silent Level is raised to 50% so the
+    /// groove is heard. Nothing changes when the chain or Level's lanes are
+    /// full.
+    pub(crate) fn chug(&mut self) -> Result<EffectAcknowledgement, EffectFailure> {
+        const LEVEL: &str = "perc.level";
+        let level = ControlAddress::new(LEVEL);
+        let current = self.session.load();
+        let slots = &current.controls.modules.perc;
+        if chain_amount_slot(slots, "swing").is_none() && !slots.iter().any(ModuleSlot::is_empty) {
+            return Ok(EffectAcknowledgement::Message(format!(
+                "Perc chain full ({MODULE_SLOTS}/{MODULE_SLOTS})"
+            )));
+        }
+        let has_lane = |snapshot: &LiveSessionSnapshot| {
+            snapshot.automation.routes_for(level).position(is_chug_lane)
+        };
+        if has_lane(&current).is_none()
+            && current.automation.routes_for(level).count() >= MAX_AUTOMATION_LANES_PER_KIND
+        {
+            return Err(EffectFailure::AutomationLaneLimit);
+        }
+        drop(current);
+        self.edit_session(Some(LEVEL), |snapshot| {
+            let perc = &mut snapshot.controls.perc;
+            perc.apply_pattern_preset(0.0);
+            perc.interval_beats = 0.25;
+            perc.offset_beats = 0.0;
+            if perc.level <= f32::EPSILON {
+                perc.level = CHUG_SILENT_LEVEL;
+            }
+            let slots = &mut snapshot.controls.modules.perc;
+            match chain_amount_slot(slots, "swing") {
+                Some(index) => slots[index].amount = CHUG_SWING,
+                None => {
+                    if let Some(free) = slots.iter().position(ModuleSlot::is_empty) {
+                        slots[free] = preset_slot("swing", CHUG_SWING);
+                    }
+                }
+            }
+            match has_lane(snapshot) {
+                Some(index) => {
+                    if let Some(lane) = snapshot.automation.lfo_at_mut(level, index) {
+                        *lane = chug_lfo();
+                    }
+                }
+                None => {
+                    snapshot.automation.add_route(level, chug_lfo());
+                }
+            }
+        });
+        let index = spec_index(Tab::Perc, LEVEL).ok_or(EffectFailure::UnknownControl(LEVEL))?;
+        let selected = self.execute(LiveEffect::SelectControl {
+            tab: Tab::Perc,
+            index,
+            id: LEVEL,
+        })?;
+        self.show_message("Chug: Perc 16ths, 60% swing, off-beat accents".to_string());
+        Ok(selected)
+    }
+
     /// Mute is a session overlay, so automation and auto morph keep driving
     /// the authored level while the engine gates the final layer output.
     pub(crate) fn toggle_mute(&mut self, tab: Tab) {
@@ -1647,6 +1741,7 @@ impl EffectExecutor {
                 None,
                 ModulePlacement::Slapback,
             ),
+            InteractionEffect::Chug => self.chug(),
             InteractionEffect::PlaceFilterCutoff { tab } => self.place_module(
                 tab,
                 module_catalog_index(interaction::FILTER_MODULE_ID),
@@ -2561,6 +2656,10 @@ impl EffectExecutor {
                     None,
                     ModulePlacement::Slapback,
                 )
+            }
+            InteractionEffect::Chug => {
+                self.edit_navigation_automation(AutomationState::close_editor);
+                self.chug()
             }
             InteractionEffect::PlaceFilterCutoff { tab } => {
                 self.edit_navigation_automation(AutomationState::close_editor);
@@ -3510,6 +3609,125 @@ mod tests {
             ack,
             EffectAcknowledgement::ControlSelected { tab: Tab::Bass, .. }
         ));
+    }
+
+    #[test]
+    fn chug_sets_a_swung_off_beat_perc_groove_in_one_edit() {
+        let mut executor = executor_with(FluidControls::default());
+        let before = executor.session().load();
+        assert_eq!(before.controls.perc.level, 0.0, "fresh Perc is silent");
+        let ack = executor
+            .execute_interaction(
+                InteractionEffect::Chug,
+                &InteractionExecutionContext::default(),
+            )
+            .unwrap();
+        assert!(matches!(
+            ack,
+            EffectAcknowledgement::ControlSelected {
+                tab: Tab::Perc,
+                id: "perc.level",
+                ..
+            }
+        ));
+        let snapshot = executor.session().load();
+        assert_eq!(
+            snapshot.generation,
+            before.generation + 1,
+            "one publication"
+        );
+        let perc = &snapshot.controls.perc;
+        assert_eq!(perc.pattern, 0.0, "Steady");
+        assert_eq!(perc.steps, DEFAULT_PERC_STEPS, "every step hits");
+        assert_eq!((perc.interval_beats, perc.offset_beats), (0.25, 0.0));
+        assert_eq!(perc.level, CHUG_SILENT_LEVEL);
+        let slots = snapshot.controls.modules.perc;
+        let swing = chain_amount_slot(&slots, "swing").expect("a Swing module");
+        assert_eq!(slots[swing].amount, 0.4);
+        assert_eq!(registry::swing_pct(slots[swing].amount), "60%");
+        let level = ControlAddress::new("perc.level");
+        let lanes: Vec<LfoRoute> = snapshot.automation.routes_for(level).copied().collect();
+        assert_eq!(lanes, vec![chug_lfo()]);
+        // The peak lands on the off-beat eighth, the trough on the beat.
+        let lane = lanes[0];
+        assert!((lane.wave_at(4.5) - 1.0).abs() < 1e-6);
+        assert!((lane.wave_at(5.0) + 1.0).abs() < 1e-6);
+        assert!((lane.wave_at(5.25)).abs() < 1e-6);
+
+        // Repeating reuses the lane and the module and reapplies the values.
+        executor.session.update(|snapshot| {
+            snapshot.controls.perc.level = 0.8;
+            snapshot.controls.modules.perc[swing].amount = 0.9;
+            snapshot.controls.perc.interval_beats = 0.5;
+            snapshot
+                .automation
+                .lfo_at_mut(level, 0)
+                .unwrap()
+                .depth_ratio = 0.9;
+        });
+        executor
+            .execute_interaction(
+                InteractionEffect::Chug,
+                &InteractionExecutionContext::default(),
+            )
+            .unwrap();
+        let again = executor.session().load();
+        assert_eq!(again.controls.perc.level, 0.8, "an audible Level is kept");
+        assert_eq!(again.controls.modules.perc[swing].amount, 0.4);
+        assert_eq!(
+            chain_amount_slot(&again.controls.modules.perc, "swing"),
+            Some(swing)
+        );
+        assert_eq!(again.controls.perc.interval_beats, 0.25);
+        assert_eq!(
+            again
+                .automation
+                .routes_for(level)
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![chug_lfo()]
+        );
+        let song = SongState {
+            automation: again.automation.clone(),
+            ..SongState::from_controls(again.controls.clone())
+        };
+        let decoded = decode_song_code(&encode_song_code(&song).unwrap()).unwrap();
+        assert_eq!(decoded.automation.routes_for(level).count(), 1);
+    }
+
+    #[test]
+    fn chug_changes_nothing_when_the_chain_or_the_level_lanes_are_full() {
+        let mut full_chain = FluidControls::default();
+        for slot in &mut full_chain.modules.perc {
+            *slot = added_module_slot("drive");
+        }
+        let mut executor = executor_with(full_chain);
+        let before = executor.session().load();
+        let ack = executor
+            .execute_interaction(
+                InteractionEffect::Chug,
+                &InteractionExecutionContext::default(),
+            )
+            .unwrap();
+        assert!(matches!(ack, EffectAcknowledgement::Message(ref text) if text.contains("full")));
+        assert_eq!(executor.session().load().generation, before.generation);
+
+        let mut executor = executor_with(FluidControls::default());
+        let level = ControlAddress::new("perc.level");
+        executor.session.update(|snapshot| {
+            for _ in 0..MAX_AUTOMATION_LANES_PER_KIND {
+                snapshot.automation.add_route(level, LfoRoute::default());
+            }
+        });
+        let before = executor.session().load();
+        assert_eq!(
+            executor.execute_interaction(
+                InteractionEffect::Chug,
+                &InteractionExecutionContext::default()
+            ),
+            Err(EffectFailure::AutomationLaneLimit)
+        );
+        assert_eq!(executor.session().load().generation, before.generation);
     }
 
     #[test]

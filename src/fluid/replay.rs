@@ -2672,6 +2672,37 @@ fn palette_added_effect_stays_on_its_page_instead_of_drilling_in() {
     );
 }
 
+/// `/chug`, `/yeehaw` and `/boogie` set the swung Perc groove from the hub
+/// and land on Perc Level.
+#[test]
+fn slash_chug_and_its_aliases_set_the_perc_groove() {
+    for query in ["chug", "yeehaw", "boogie"] {
+        let mut events = vec![key(0, FixtureKey::Character('/'), InputPhase::Press)];
+        events.extend(
+            query
+                .chars()
+                .map(|c| key(0, FixtureKey::Character(c), InputPhase::Press)),
+        );
+        events.push(key(0, FixtureKey::Enter, InputPhase::Press));
+        let result = replay(&events, TerminalCapabilities::full());
+        // Perc ships a Filter in its first slot; Swing takes the next free.
+        let swing = (1..=super::MODULE_SLOTS)
+            .find(|slot| {
+                result.control(&format!("perc.slot{slot}.kind"))
+                    == Some(super::module_kind_value("swing"))
+            })
+            .unwrap_or_else(|| panic!("{query}: no Swing module"));
+        assert_eq!(
+            result.control(&format!("perc.slot{swing}.amount")),
+            Some(0.4),
+            "{query}"
+        );
+        assert_eq!(result.control("perc.interval_beats"), Some(0.25), "{query}");
+        assert_eq!(result.control("perc.level"), Some(0.5), "{query}");
+        assert_eq!(result.model.navigation.tab(), Tab::Perc, "{query}");
+    }
+}
+
 #[test]
 fn slash_slapback_adds_preset_to_current_layer() {
     let mut events = vec![

@@ -639,6 +639,14 @@ impl AutomationState {
         self.stacks.get(&address)?.lfos.get(index)
     }
 
+    pub(crate) fn lfo_at_mut(
+        &mut self,
+        address: ControlAddress,
+        index: usize,
+    ) -> Option<&mut LfoRoute> {
+        self.stacks.get_mut(&address)?.lfos.get_mut(index)
+    }
+
     pub(crate) fn route_mut(&mut self, address: ControlAddress) -> Option<&mut LfoRoute> {
         let index = self
             .open
