@@ -1783,8 +1783,12 @@ fn morph_percentage_phase_silences_kick_and_bass_including_automation_and_tails(
         let mut held_peak = 0.0f32;
         let mut crossing_peak = 0.0f32;
         let mut landed_peak = 0.0f32;
+        // The output stage delays what is heard by its lookahead; 120 BPM is
+        // two beats a second.
+        let latency_beats =
+            engine.master_bus.limiter.latency() as f64 * 2.0 / f64::from(sample_rate);
         for frame in 0..(sample_rate * 6.5) as usize {
-            let beat = engine.tempo.beat;
+            let beat = engine.tempo.beat - latency_beats;
             let (left, right) = engine.next_stereo();
             let peak = left.abs().max(right.abs());
             let seconds = frame as f32 / sample_rate;
@@ -3536,8 +3540,9 @@ const GOLDEN_RENDER_SAMPLES: usize = 48_000;
 // Re-blessed for unified 16-step sequencer: Tonal now resolves degrees via
 // ProgressionFollower + lead_reach on the shared 16-step lane.
 #[cfg(debug_assertions)]
-// Updated for the intended Perc default and feedback-delay-network reverb.
-const GOLDEN_RENDER_CHECKSUM: u64 = 0xf188_fb35_91dc_0ee7;
+// Re-blessed for the Master output stage (ADR 0003): +6 dB makeup and the
+// lookahead limiter's 1.5 ms delay in place of the 0.95 clamp.
+const GOLDEN_RENDER_CHECKSUM: u64 = 0xefc1_eafe_cb65_d95d;
 
 /// FNV-1a fold of one sample's bit pattern into a running hash. Hashing raw
 /// bit patterns (not values) means any float divergence, including sub-ULP

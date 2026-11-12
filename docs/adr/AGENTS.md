@@ -17,6 +17,9 @@ Accepted ADR is a contract.
 - `0003-chord-lane-and-clock.md` (Accepted; not implemented) amends 0002:
   one timed `HarmonyLane`, one stateless `LaneClock`, base/loop/hold layers,
   downbeat as pure rotation, and the build order.
+- `0004-master-output-stage.md` (Accepted) owns the fixed output makeup, the
+  -1 dBFS lookahead limiter that replaced the 0.95 clamp, and their loudness
+  targets and verification.
 
 ## Local Contracts
 

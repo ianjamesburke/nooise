@@ -12,6 +12,7 @@ use crate::fx::crossfade::{Outgoing, mix_stereo};
 use crate::fx::delay::{DelayParams, StereoDelay};
 use crate::fx::drive::{DriveParams, DriveType, StereoDrive};
 use crate::fx::filter::{FilterParams, FilterType, StereoFilter};
+use crate::fx::limiter::Limiter;
 use crate::fx::reverb::{FdnReverb, ReverbParams};
 
 use super::*;
@@ -2654,19 +2655,26 @@ impl GridTrigger {
 }
 
 // ============================================================
-// Master bus (tilt EQ and final level)
+// Master bus (tilt EQ, final level, output stage)
 // ============================================================
+
+/// Fixed output makeup, +6 dB, applied after Master Level. It places the
+/// median built-in song at 100% Master Level near -14 LUFS integrated
+/// (`loudness_probe`); the limiter keeps peaks at its -1 dBFS ceiling.
+pub(crate) const MASTER_MAKEUP: f32 = 1.995_262_3;
 
 pub(crate) struct MasterBus {
     pub(crate) tone_l: f32,
     pub(crate) tone_r: f32,
+    pub(crate) limiter: Limiter,
 }
 
 impl MasterBus {
-    pub(crate) fn new(_c: &MasterControls, _sample_rate: f32) -> Self {
+    pub(crate) fn new(_c: &MasterControls, sample_rate: f32) -> Self {
         Self {
             tone_l: 0.0,
             tone_r: 0.0,
+            limiter: Limiter::new(sample_rate),
         }
     }
 
@@ -2686,10 +2694,8 @@ impl MasterBus {
             }
         }
 
-        (
-            (l * c.level).clamp(-0.95, 0.95),
-            (r * c.level).clamp(-0.95, 0.95),
-        )
+        let gain = c.level * MASTER_MAKEUP;
+        self.limiter.process(l * gain, r * gain)
     }
 }
 
