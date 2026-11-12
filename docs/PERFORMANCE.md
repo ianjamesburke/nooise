@@ -334,7 +334,8 @@ clock, and a loaded code always starts at beat zero anyway.
 The Master page has Key (C through B) and Mode (Major, Minor, Dorian,
 Phrygian or Mixolydian), always concrete. Launch and loading a song set both
 to the progression's own key, so a song sounds as authored until they move;
-choosing another progression keeps them, and it plays in them. The
+choosing another progression keeps them, and it plays in them. Reset on
+Key or Mode returns it to the current progression's own key. The
 progression is read relative to them: Key transposes it, and Mode re-reads
 each diatonic chord on its degree (Harvest's Fmaj7 becomes Fm7 in F minor)
 while sus, power and borrowed chords keep their notes, and the Bass under a

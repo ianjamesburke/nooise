@@ -384,6 +384,36 @@ fn master_key_and_mode_dials_name_concrete_values() {
     );
 }
 
+/// Reset returns the Master Key and Mode to the current progression's own
+/// key, whatever was chosen and whichever progression is playing.
+#[test]
+fn resetting_key_and_mode_returns_to_the_progressions_own_key() {
+    let harvest = PROGRESSIONS
+        .iter()
+        .position(|p| p.mood == "Harvest")
+        .unwrap();
+    let mut controls = FluidControls::default();
+    controls.pad.progression = harvest as f32;
+    controls.master.key = 2.0;
+    controls.master.mode = 2.0;
+    for id in ["master.key", "master.key_mode"] {
+        let index = tab_specs(Tab::Master)
+            .iter()
+            .position(|spec| spec.id == id)
+            .unwrap();
+        apply_reset(Tab::Master, index, &mut controls);
+    }
+    assert_eq!(
+        MasterKey::from_controls(&controls.master),
+        MasterKey::new(5, HomeMode::Major),
+        "Harvest's own F major"
+    );
+    controls.pad.progression = 0.0;
+    let key = spec_by_id("master.key").unwrap();
+    key.apply_reset(&mut controls);
+    assert_eq!(controls.master.key, 9.0, "Drift's own A");
+}
+
 /// A default song is already derived: its Master Key and Mode are the
 /// default progression's own.
 #[test]

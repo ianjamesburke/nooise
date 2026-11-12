@@ -364,6 +364,11 @@ pub(crate) struct ControlSpec {
     /// Overrides `label` per render. Only module-slot rows use it, so a slot
     /// names the module it holds instead of its index.
     pub(crate) label_of: Option<DisplayFn>,
+    /// A reset target that depends on the song (the Master Key's reset is
+    /// the progression's own key). `contextual` resolves it into `reset`, so
+    /// every reset path that crosses that seam lands on it; the static
+    /// `reset` is only the context-free fallback.
+    reset_from: Option<GetFn>,
 }
 
 impl ControlSpec {
@@ -403,6 +408,7 @@ impl ControlSpec {
             display,
             stored: None,
             label_of: None,
+            reset_from: None,
         }
     }
 
@@ -479,6 +485,12 @@ impl ControlSpec {
         self
     }
 
+    /// Reset to a value read from the song itself (see `reset_from`).
+    pub(crate) const fn reset_from(mut self, reset: GetFn) -> Self {
+        self.reset_from = Some(reset);
+        self
+    }
+
     pub(crate) const fn taper(mut self, taper: Taper) -> Self {
         self.taper = taper;
         self
@@ -517,7 +529,11 @@ impl ControlSpec {
     /// decode crosses this seam, so detail rendering cannot disagree with the
     /// value semantics used by the engine.
     pub(crate) fn contextual(&self, c: &FluidControls) -> Self {
-        self.contextual_row(module_slot_row(self.id, c))
+        let mut spec = self.contextual_row(module_slot_row(self.id, c));
+        if let Some(reset) = self.reset_from {
+            spec.reset = reset(c);
+        }
+        spec
     }
 
     /// `contextual` for a caller that already resolved this row's slot,
@@ -1637,7 +1653,7 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &layer_controls!(
         )
         .search_name("master key transpose tune")
         .song_values(&MASTER_KEY_SONG_VALUES)
-        .reset_at(9.0),
+        .reset_from(|c| own_key(c).0),
         ControlSpec::new(
             "master.key_mode",
             "Mode",
@@ -1651,7 +1667,7 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &layer_controls!(
             |c| master_mode(c.master.mode).0.to_string(),
         )
         .search_name("master mode scale harmony")
-        .reset_at(1.0),
+        .reset_from(|c| own_key(c).1),
         ControlSpec::new(
             "master.octave",
             "Octave",
@@ -1671,6 +1687,12 @@ pub(crate) const MASTER_CONTROLS: &[ControlSpec] = &layer_controls!(
         .reset_at(0.0),
     ]
 );
+
+/// The `master.key` and `master.key_mode` dial values of the current
+/// progression's own key: where Reset returns the Master Key and Mode.
+fn own_key(c: &FluidControls) -> (f32, f32) {
+    MasterKey::of_progression(progression_index(c.pad.progression)).dial_values()
+}
 
 macro_rules! perc_step_row {
     ($step:literal) => {
