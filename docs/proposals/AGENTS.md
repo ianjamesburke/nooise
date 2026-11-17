@@ -17,6 +17,9 @@ Feature designs that can be discussed before changing runtime behavior.
   corpus, model path, runtime limits, and listening evaluation
 - `2026-10-04-live-audio-textures.md` owns the agreed direction and proposed milestones for audio-input tracks, resonant objects, granular effects, and bowed textures; runtime design remains open.
 - Product rules remain in `../NORTH_STAR.md`; accepted architecture belongs in `../adr/`; shipped performance behavior belongs in `../PERFORMANCE.md`.
+- `2026-11-12-venue-rig-and-perf.md` records the venue rig tiers, latency and CPU measurements, and the 60-minute rehearsal checklist.
+- `2026-11-17-robot.md` records the Robot improviser research and v1 rules.
+- `2026-11-17-flip.md` records the Flip consult: a bar-quantized multi-layer change, Robot chord requests, and the post-show order.
 
 ## Local Contracts
 
