@@ -12,7 +12,7 @@ use crate::fx::crossfade::{Outgoing, mix_stereo};
 use crate::fx::delay::{DelayParams, StereoDelay};
 use crate::fx::drive::{DriveParams, DriveType, StereoDrive};
 use crate::fx::filter::{FilterParams, FilterType, StereoFilter};
-use crate::fx::reverb::{Freeverb, ReverbParams};
+use crate::fx::reverb::{Freeverb, ModulatedHall, ReverbParams};
 
 use super::*;
 
@@ -33,7 +33,7 @@ const LEVEL_METER_RELEASE_SECONDS: f32 = 0.25;
 /// `(layer, slot)` storage identity rather than a catalog name.
 enum SlotFx {
     Delay(StereoDelay),
-    Reverb(Freeverb),
+    Reverb(Box<ModulatedHall>),
     Compression(StereoCompressor),
     Filter(StereoFilter),
     Drive(StereoDrive),
@@ -302,7 +302,9 @@ impl ModuleFxBank {
                     if processor.is_none() {
                         *processor = Some(match kind.family {
                             Family::Delay => SlotFx::Delay(StereoDelay::new(max_delay_samples)),
-                            Family::Reverb => SlotFx::Reverb(Freeverb::new(sample_rate)),
+                            Family::Reverb => {
+                                SlotFx::Reverb(Box::new(ModulatedHall::new(sample_rate)))
+                            }
                             Family::Filter => SlotFx::Filter(StereoFilter::default()),
                             Family::Drive => SlotFx::Drive(StereoDrive::new(sample_rate)),
                             _ => SlotFx::Compression(StereoCompressor::new(0.0)),
@@ -471,11 +473,14 @@ mod module_fx_tests {
         slots[0] = ModuleSlot::default();
         assert!(slots[0].is_empty(), "the slot under test must be empty");
 
-        // The sample right after removal must still carry essentially the
-        // whole tail: that is the difference between a fade and a cliff.
-        let first = run(&mut bank, &slots, (0.0, 0.0), 1)[0];
+        // The tail must still be present. A hard cut drops this to ~0. The
+        // hall's echoes are uneven, so the bar is below the old smooth-wash
+        // ratio of one half.
+        let first = run(&mut bank, &slots, (0.0, 0.0), 32)
+            .into_iter()
+            .fold(0.0f32, f32::max);
         assert!(
-            first > level * 0.5,
+            first > level * 0.25,
             "tail was cut to {first} from a {level} tail"
         );
 
@@ -516,9 +521,11 @@ mod module_fx_tests {
         let (mut bank, mut slots, level) = bank_with_a_live_tail();
 
         slots[0] = preset_slot("drive", 0.0);
-        let first = run(&mut bank, &slots, (0.0, 0.0), 1)[0];
+        let first = run(&mut bank, &slots, (0.0, 0.0), 32)
+            .into_iter()
+            .fold(0.0f32, f32::max);
         assert!(
-            first > level * 0.5,
+            first > level * 0.25,
             "outgoing module was cut to {first} from a {level} tail"
         );
     }

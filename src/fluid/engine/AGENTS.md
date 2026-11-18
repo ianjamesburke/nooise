@@ -12,7 +12,7 @@ Audio processing helpers owned by `../engine.rs`.
 
 ## Local Contracts
 
-- Reuse the shared module processor dispatch for Filter, Reverb, and Delay. Keep gesture state separate from user slots.
+- Echo and the filter gestures reuse the shared module processors. Bloom owns a `Freeverb` directly so a module-slot reverb change does not retune the gesture. Keep gesture state separate from user slots.
 - Allocate gesture processor storage before sample processing. Presses and effect tails must not grow storage.
 - Gestures never clip the master: returns trade dry level for wet (Bloom/Echo duck the dry path), filters carry no resonance, and Bloom's send is band-shaped (high-passed at 220 Hz so sustained lows cannot pile up in its combs, and low-passed at 3.2 kHz with a 10% dry duck so sharp percussive transients stay locked to the dry grid instead of slapping back 25–37 ms late in Freeverb's comb filters). At real playback level a full throw never touches the clamp. The Master output clamp stays as a backstop; headroom is the gesture stage's job.
 - Every gesture lets go within `GESTURE_RELEASE_SECONDS` (10 ms, `fluid/gesture.rs`): the envelope returns in it, and Bloom's and Echo's wet returns ramp out linearly over it through `ReturnWeight`, so no reverb or echo tail rings on; the dry duck returns with the envelope, and a repress slews the return back up. Both processors then clear incrementally, and a fresh press during clearing must accept new input.
