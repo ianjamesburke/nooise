@@ -3276,8 +3276,9 @@ const GOLDEN_RENDER_SAMPLES: usize = 48_000;
 // decay 250→150 ms, kick click 0→10%, clap filter 0.75→0.70.
 // Re-blessed for unified 16-step sequencer: Tonal now resolves degrees via
 // ProgressionFollower + lead_reach on the shared 16-step lane.
+// Re-blessed when module-slot reverb became the dark room. Audible on purpose.
 #[cfg(debug_assertions)]
-const GOLDEN_RENDER_CHECKSUM: u64 = 0x8611_0f2f_a641_55a4;
+const GOLDEN_RENDER_CHECKSUM: u64 = 0xaadc_532a_de10_5fcb;
 
 /// FNV-1a fold of one sample's bit pattern into a running hash. Hashing raw
 /// bit patterns (not values) means any float divergence, including sub-ULP

@@ -801,7 +801,7 @@ fn read_lane_bypass(payload: &[u8], song: &mut SongState) -> Result<(), SongCode
         return Err(SongCodeError::InvalidLaneBypass);
     }
     let mut seen = BTreeSet::new();
-    for entry in payload.chunks_exact(4) {
+    for entry in payload.as_chunks::<4>().0 {
         let index = u16::from_le_bytes([entry[0], entry[1]]);
         reject_retired_control(index)?;
         let spec = control_at(index).ok_or(SongCodeError::InvalidLaneBypass)?;
