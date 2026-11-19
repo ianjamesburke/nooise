@@ -3078,7 +3078,10 @@ fn stopping_the_clock_lets_tails_ring_out_and_starting_it_restarts_the_song() {
     let beat = telemetry.beat();
     let kicks = telemetry.kick_pulse.load(Ordering::Relaxed);
     let chord = telemetry.chord_slot.load(Ordering::Relaxed);
-    let tails = render_seconds(&mut engine, 3.0);
+    // Factory Pad release is 8 s and quadratic. Three seconds still sits close
+    // to the restarted chord once `PAD_SUM_GAIN` lifts the pad; six seconds
+    // lets that tail fall clearly under the song that starting brings back.
+    let tails = render_seconds(&mut engine, 6.0);
 
     assert_eq!(telemetry.beat(), beat, "a stopped clock must hold its beat");
     assert_eq!(telemetry.kick_pulse.load(Ordering::Relaxed), kicks);
@@ -3276,8 +3279,10 @@ const GOLDEN_RENDER_SAMPLES: usize = 48_000;
 // decay 250→150 ms, kick click 0→10%, clap filter 0.75→0.70.
 // Re-blessed for unified 16-step sequencer: Tonal now resolves degrees via
 // ProgressionFollower + lead_reach on the shared 16-step lane.
+// Re-blessed for the pad sum makeup (`PAD_SUM_GAIN`): a deliberate +6 dB on
+// the summed Pad, audible, not a rounding change.
 #[cfg(debug_assertions)]
-const GOLDEN_RENDER_CHECKSUM: u64 = 0x8611_0f2f_a641_55a4;
+const GOLDEN_RENDER_CHECKSUM: u64 = 0x0312_b9f4_93a7_1d88;
 
 /// FNV-1a fold of one sample's bit pattern into a running hash. Hashing raw
 /// bit patterns (not values) means any float divergence, including sub-ULP
